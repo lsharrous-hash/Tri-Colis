@@ -1,23 +1,16 @@
-Push git hub
+# Commit sur dev
+git add web/src/pages/ToursImport.tsx
+git commit -m "fix: permettre création sous-traitant dans modal Cainiao"
 
- 1. Crée une branche de développement :
- 
- git checkout -b dev
+# Push la branche dev (optionnel, pour backup sur GitHub)
+git push -u origin dev
 
+# Revenir sur main
+git checkout main
 
-2. Travaille normalement, fais tes commits :
-bash
-
-git add .
-git commit -m "mon changement"
-
-
-3. Quand c'est prêt pour la prod, fusionne dans main :
-bashgit checkout main
-
+# Merger dev dans main
 git merge dev
+
+# Push vers prod (Render redéploie)
 git push origin main
 
-Seul le push sur main déclenche le déploiement sur Render.
-  
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

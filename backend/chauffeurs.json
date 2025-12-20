@@ -77,6 +77,36 @@
       "normalized": "lyne",
       "sousTraitant": "SOW",
       "createdAt": "2025-12-19T23:38:28.588Z"
+    },
+    {
+      "name": "Khalifa",
+      "normalized": "khalifa",
+      "sousTraitant": "SOW",
+      "createdAt": "2025-12-20T13:22:13.036Z"
+    },
+    {
+      "name": "Flavien",
+      "normalized": "flavien",
+      "sousTraitant": "SOW",
+      "createdAt": "2025-12-20T13:22:13.082Z"
+    },
+    {
+      "name": "Erwan",
+      "normalized": "erwan",
+      "sousTraitant": "D Transport",
+      "createdAt": "2025-12-20T13:22:13.094Z"
+    },
+    {
+      "name": "Marwan",
+      "normalized": "marwan",
+      "sousTraitant": "CKB",
+      "createdAt": "2025-12-20T13:22:13.102Z"
+    },
+    {
+      "name": "Mansour",
+      "normalized": "mansour",
+      "sousTraitant": "KTM",
+      "createdAt": "2025-12-20T13:22:13.111Z"
     }
   ],
   "sousTraitants": [
@@ -85,6 +115,8 @@
     "SOW",
     "3AS",
     "TCP",
-    "SpeedHall"
+    "SpeedHall",
+    "CKB",
+    "KTM"
   ]
 }
