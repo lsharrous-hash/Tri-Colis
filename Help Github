@@ -1,0 +1,28 @@
+Push git hub
+
+ 1. Crée une branche de développement :
+ 
+ git checkout -b dev
+
+
+2. Travaille normalement, fais tes commits :
+bash
+
+git add .
+git commit -m "mon changement"
+
+
+3. Quand c'est prêt pour la prod, fusionne dans main :
+bashgit checkout main
+
+git merge dev
+git push origin main
+
+Seul le push sur main déclenche le déploiement sur Render.
+
+
+4 Restaurer Github
+
+ git checkout -- .
+  
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

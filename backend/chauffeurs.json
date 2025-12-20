@@ -1,0 +1,90 @@
+{
+  "chauffeurs": [
+    {
+      "name": "Ayoub",
+      "normalized": "ayoub",
+      "sousTraitant": "D Transport",
+      "createdAt": "2025-12-19T23:35:43.239Z"
+    },
+    {
+      "name": "Dro",
+      "normalized": "dro",
+      "sousTraitant": "SOW",
+      "createdAt": "2025-12-19T23:35:49.089Z"
+    },
+    {
+      "name": "Mohamed jnr",
+      "normalized": "mohamed",
+      "sousTraitant": "JNR",
+      "createdAt": "2025-12-19T23:35:52.471Z"
+    },
+    {
+      "name": "Lucas",
+      "normalized": "lucas",
+      "sousTraitant": "JNR",
+      "createdAt": "2025-12-19T23:35:56.070Z"
+    },
+    {
+      "name": "Louis",
+      "normalized": "louis",
+      "sousTraitant": "JNR",
+      "createdAt": "2025-12-19T23:36:01.621Z"
+    },
+    {
+      "name": "Hakim",
+      "normalized": "hakim",
+      "sousTraitant": "JNR",
+      "createdAt": "2025-12-19T23:36:04.646Z"
+    },
+    {
+      "name": "Abdel jnr",
+      "normalized": "abdel",
+      "sousTraitant": "JNR",
+      "createdAt": "2025-12-19T23:36:07.442Z"
+    },
+    {
+      "name": "Bouba",
+      "normalized": "bouba",
+      "sousTraitant": "3AS",
+      "createdAt": "2025-12-19T23:36:21.295Z"
+    },
+    {
+      "name": "Ludo",
+      "normalized": "ludo",
+      "sousTraitant": "TCP",
+      "createdAt": "2025-12-19T23:36:38.570Z"
+    },
+    {
+      "name": "Wann",
+      "normalized": "wann",
+      "sousTraitant": "SpeedHall",
+      "createdAt": "2025-12-19T23:36:57.454Z"
+    },
+    {
+      "name": "Tidiane",
+      "normalized": "tidiane",
+      "sousTraitant": "SOW",
+      "createdAt": "2025-12-19T23:37:38.619Z"
+    },
+    {
+      "name": "Biagui",
+      "normalized": "biagui",
+      "sousTraitant": "SOW",
+      "createdAt": "2025-12-19T23:38:03.916Z"
+    },
+    {
+      "name": "Lyne",
+      "normalized": "lyne",
+      "sousTraitant": "SOW",
+      "createdAt": "2025-12-19T23:38:28.588Z"
+    }
+  ],
+  "sousTraitants": [
+    "JNR",
+    "D Transport",
+    "SOW",
+    "3AS",
+    "TCP",
+    "SpeedHall"
+  ]
+}
