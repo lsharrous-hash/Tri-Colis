@@ -261,10 +261,13 @@ function findMutualizedDrivers(date, sousTraitant) {
     console.log('DEBUG', 'Processing Gofo tour', { chauffeur: tour.chauffeurName, normalized: normalizedName, colisCount: tourColisCount });
     
     if (!driversMap.has(normalizedName)) {
+      // Chercher le sous-traitant dans chauffeurs.json si pas dans la tournée
+      const sousTraitantFromMapping = findSousTraitantForChauffeur(tour.chauffeurName);
+      const finalSousTraitant = tour.sousTraitantName || sousTraitantFromMapping || null;
       driversMap.set(normalizedName, {
         name: displayName,
         normalizedName: normalizedName,
-        sousTraitant: tour.sousTraitantName,
+        sousTraitant: finalSousTraitant,
         gofoTourIds: [],
         caniaoTourIds: [],
         gofoColisCount: 0,
@@ -313,10 +316,14 @@ function findMutualizedDrivers(date, sousTraitant) {
     if (!matched) {
       console.log('No match for Cainiao:', tour.chauffeurName);
       const displayName = tour.chauffeurName.charAt(0).toUpperCase() + tour.chauffeurName.slice(1).toLowerCase();
+      // Chercher le sous-traitant dans chauffeurs.json OU depuis la tournée
+      const sousTraitantFromMapping = findSousTraitantForChauffeur(tour.chauffeurName);
+      const finalSousTraitant = tour.sousTraitantName || sousTraitantFromMapping || null;
+      console.log('DEBUG Cainiao-only driver sous-traitant:', { chauffeur: tour.chauffeurName, fromTour: tour.sousTraitantName, fromMapping: sousTraitantFromMapping, final: finalSousTraitant });
       driversMap.set(normalizedCaniaoName, {
         name: displayName,
         normalizedName: normalizedCaniaoName,
-        sousTraitant: null,  // Pas de sous-traitant connu (pas de match Gofo)
+        sousTraitant: finalSousTraitant,  // Chercher dans chauffeurs.json si pas dans la tournée
         gofoTourIds: [],
         caniaoTourIds: [tour.id],
         gofoColisCount: 0,
@@ -965,6 +972,87 @@ loadUsersFromFile();
 loadDataFromFile();
 loadSessionsFromFile();
 loadChauffeursFromFile(); // Mapping chauffeur → sous-traitant
+
+// ==============================
+// Synchronisation automatique des sous-traitants
+// + Nettoyage des doublons de tournées
+// ==============================
+function syncToursSousTraitants() {
+  let updated = 0;
+  let duplicatesRemoved = 0;
+  
+  // 1. D'abord, supprimer les doublons de tournées Cainiao (même chauffeur + même date)
+  // Garder la tournée avec sous-traitant, ou la plus récente
+  const tourneesVues = new Map(); // clé: "chauffeur_date_isCaniao"
+  const tourneesASupprimer = [];
+  
+  for (const tour of TOURS) {
+    if (tour.isCaniao) {
+      const key = `${tour.chauffeurName?.toLowerCase()}_${tour.date}`;
+      
+      if (tourneesVues.has(key)) {
+        const existante = tourneesVues.get(key);
+        // Garder celle avec sous-traitant, ou la plus récente
+        if (!tour.sousTraitantName && existante.sousTraitantName) {
+          // La nouvelle n'a pas de ST, l'ancienne oui -> supprimer la nouvelle
+          tourneesASupprimer.push(tour.id);
+        } else if (tour.sousTraitantName && !existante.sousTraitantName) {
+          // La nouvelle a un ST, l'ancienne non -> supprimer l'ancienne
+          tourneesASupprimer.push(existante.id);
+          tourneesVues.set(key, tour);
+        } else if (tour.id > existante.id) {
+          // Les deux ont (ou n'ont pas) de ST -> garder la plus récente
+          tourneesASupprimer.push(existante.id);
+          tourneesVues.set(key, tour);
+        } else {
+          tourneesASupprimer.push(tour.id);
+        }
+      } else {
+        tourneesVues.set(key, tour);
+      }
+    }
+  }
+  
+  // Supprimer les tournées en double et leurs colis
+  if (tourneesASupprimer.length > 0) {
+    for (const tourId of tourneesASupprimer) {
+      COLIS = COLIS.filter(c => c.tourId !== tourId);
+    }
+    TOURS = TOURS.filter(t => !tourneesASupprimer.includes(t.id));
+    duplicatesRemoved = tourneesASupprimer.length;
+    log('INFO', `Sync auto: ${duplicatesRemoved} tournée(s) en double supprimée(s)`);
+  }
+  
+  // 2. Ensuite, mettre à jour les sous-traitants manquants
+  for (const tour of TOURS) {
+    if (!tour.sousTraitantName || tour.sousTraitantName === null) {
+      const foundST = findSousTraitantForChauffeur(tour.chauffeurName);
+      if (foundST) {
+        tour.sousTraitantName = foundST;
+        // Mettre aussi à jour les colis de cette tournée
+        for (const colis of COLIS) {
+          if (colis.tourId === tour.id) {
+            colis.sousTraitantName = foundST;
+          }
+        }
+        updated++;
+        log('INFO', 'Sync auto: sous-traitant assigné', { 
+          tourId: tour.id, 
+          chauffeur: tour.chauffeurName, 
+          sousTraitant: foundST 
+        });
+      }
+    }
+  }
+  
+  if (updated > 0 || duplicatesRemoved > 0) {
+    saveDataToFile();
+    log('INFO', `Sync auto terminée: ${updated} mise(s) à jour, ${duplicatesRemoved} doublon(s) supprimé(s)`);
+  }
+}
+
+// Exécuter la synchronisation au démarrage
+syncToursSousTraitants();
 
 // ==============================
 // Pages web
@@ -1785,6 +1873,28 @@ app.post(
         // Trier par numéro d'ordre
         uniqueColis.sort((a, b) => a.orderNumber - b.orderNumber);
 
+        // *** ANTI-DOUBLON : Supprimer l'ancienne tournée Cainiao si elle existe pour ce chauffeur + date ***
+        const existingTourIndex = TOURS.findIndex(t => 
+          t.chauffeurName?.toLowerCase() === chauffeur.toLowerCase() && 
+          t.date === tourDate && 
+          t.isCaniao === true
+        );
+        
+        if (existingTourIndex >= 0) {
+          const oldTour = TOURS[existingTourIndex];
+          log('INFO', 'Tournée Cainiao existante trouvée - remplacement', { 
+            oldTourId: oldTour.id, 
+            chauffeur, 
+            date: tourDate,
+            oldST: oldTour.sousTraitantName,
+            newST: sousTraitantName
+          });
+          // Supprimer les colis de l'ancienne tournée (même chauffeur + même date)
+          COLIS = COLIS.filter(c => c.tourId !== oldTour.id);
+          // Supprimer l'ancienne tournée
+          TOURS.splice(existingTourIndex, 1);
+        }
+
         // Créer la tournée avec le sous-traitant associé
         const tourId = NEXT_TOUR_ID++;
         const newTour = {
@@ -2079,6 +2189,28 @@ app.post(
           duplicatesCount: duplicates.length,
           duplicatesInFileCount: duplicatesInFile.length
         });
+      }
+
+      // *** ANTI-DOUBLON : Supprimer l'ancienne tournée Cainiao si elle existe pour ce chauffeur + date ***
+      const existingTourIndex = TOURS.findIndex(t => 
+        t.chauffeurName?.toLowerCase() === chauffeurName.toLowerCase() && 
+        t.date === date && 
+        t.isCaniao === true
+      );
+      
+      if (existingTourIndex >= 0) {
+        const oldTour = TOURS[existingTourIndex];
+        log('INFO', 'Tournée Cainiao Excel existante trouvée - remplacement', { 
+          oldTourId: oldTour.id, 
+          chauffeur: chauffeurName, 
+          date: date,
+          oldST: oldTour.sousTraitantName,
+          newST: sousTraitantName
+        });
+        // Supprimer les colis de l'ancienne tournée
+        COLIS = COLIS.filter(c => c.tourId !== oldTour.id);
+        // Supprimer l'ancienne tournée
+        TOURS.splice(existingTourIndex, 1);
       }
 
       // Créer la tournée Cainiao avec les colis uniques
@@ -2913,6 +3045,22 @@ app.post("/api/chauffeurs", requireAdmin, (req, res) => {
   // Ajouter
   addOrUpdateChauffeur(cleanName, cleanST);
   
+  // Synchroniser automatiquement les tournées de ce chauffeur
+  let toursMisesAJour = 0;
+  for (const tour of TOURS) {
+    if (!tour.sousTraitantName && tour.chauffeurName) {
+      const normalizedTour = normalizeDriverName(tour.chauffeurName);
+      if (normalizedTour === normalized || areDriverNamesMatching(tour.chauffeurName, cleanName)) {
+        tour.sousTraitantName = cleanST;
+        toursMisesAJour++;
+      }
+    }
+  }
+  if (toursMisesAJour > 0) {
+    saveDataToFile();
+    log('INFO', `Sync auto: ${toursMisesAJour} tournée(s) de ${cleanName} mise(s) à jour`);
+  }
+  
   res.json({
     success: true,
     message: `Chauffeur "${cleanName}" assigné à "${cleanST}"`,
@@ -3002,6 +3150,57 @@ app.get("/api/chauffeurs/lookup/:name", authMiddleware(["ADMIN"]), (req, res) =>
     chauffeur: name,
     sousTraitant: sousTraitant,
     found: sousTraitant !== null
+  });
+});
+
+// API pour rafraîchir les sous-traitants des tournées existantes
+// Parcourt toutes les tournées et met à jour le sousTraitantName basé sur chauffeurs.json
+app.post("/api/tours/refresh-sous-traitants", requireAdmin, (req, res) => {
+  const { date } = req.body; // optionnel: filtrer par date
+  
+  let toursToUpdate = TOURS;
+  if (date) {
+    toursToUpdate = TOURS.filter(t => t.date === date);
+  }
+  
+  let updated = 0;
+  let skipped = 0;
+  const updates = [];
+  
+  for (const tour of toursToUpdate) {
+    const chauffeurName = tour.chauffeurName;
+    const currentST = tour.sousTraitantName;
+    
+    // Chercher le sous-traitant dans le mapping
+    const foundST = findSousTraitantForChauffeur(chauffeurName);
+    
+    if (foundST && foundST !== currentST) {
+      // Mettre à jour
+      tour.sousTraitantName = foundST;
+      updated++;
+      updates.push({
+        tourId: tour.id,
+        chauffeur: chauffeurName,
+        oldST: currentST || '(aucun)',
+        newST: foundST
+      });
+    } else {
+      skipped++;
+    }
+  }
+  
+  // Sauvegarder si des mises à jour ont été faites
+  if (updated > 0) {
+    saveDataToFile();
+    log('INFO', 'Sous-traitants des tournées rafraîchis', { updated, skipped, by: req.user.login });
+  }
+  
+  res.json({
+    success: true,
+    message: `${updated} tournée(s) mise(s) à jour, ${skipped} ignorée(s)`,
+    updated: updated,
+    skipped: skipped,
+    details: updates
   });
 });
 
