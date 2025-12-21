@@ -610,6 +610,25 @@ function AdminView() {
   const [caniaoAssociations, setCaniaoAssociations] = useState<Record<string, { type: 'new' | 'existing'; sousTraitant: string; existingChauffeur?: string }>>({})
   const [caniaoNewST, setCaniaoNewST] = useState<string>('')
 
+  // === État pour le modal MULTI-chauffeurs GOFO ===
+  const [gofoMultiModal, setGofoMultiModal] = useState<{
+    show: boolean
+    unknownChauffeurs: { filename: string; chauffeur: string; similarChauffeurs: any[] }[]
+    knownChauffeurs: { filename: string; chauffeur: string; sousTraitant: string }[]
+    sousTraitants: string[]
+    existingChauffeurs: { name: string; sousTraitant: string; normalized: string }[]
+    pendingFiles: File[]
+  }>({
+    show: false,
+    unknownChauffeurs: [],
+    knownChauffeurs: [],
+    sousTraitants: [],
+    existingChauffeurs: [],
+    pendingFiles: []
+  })
+  const [gofoAssociations, setGofoAssociations] = useState<Record<string, { type: 'new' | 'existing'; sousTraitant: string; existingChauffeur?: string; createNewST?: boolean; newSTName?: string }>>({})
+  const [gofoCreatingNewST, setGofoCreatingNewST] = useState<string | null>(null)
+
   // Sous-traitants
   const { data: sousTraitantsData, refetch: refetchSousTraitants } = useQuery({ queryKey: ['sous-traitants'], queryFn: getSousTraitants })
   const sousTraitants = sousTraitantsData?.sousTraitants || []
@@ -633,6 +652,35 @@ function AdminView() {
       if (files.length === 0) throw new Error('Aucun fichier sélectionné')
       if (!selectedDate) throw new Error('Date requise')
       
+      // ÉTAPE 1: Vérifier tous les chauffeurs d'abord
+      const filenames = files.map(f => f.name)
+      const checkResponse = await api.post('/api/chauffeurs/check-batch', { filenames })
+      const { known, unknown, sousTraitants: stList, existingChauffeurs } = checkResponse.data
+      
+      // Si des chauffeurs inconnus, afficher le modal multi-chauffeurs
+      if (unknown.length > 0) {
+        setGofoMultiModal({
+          show: true,
+          unknownChauffeurs: unknown,
+          knownChauffeurs: known,
+          sousTraitants: stList,
+          existingChauffeurs: existingChauffeurs,
+          pendingFiles: [...files]
+        })
+        // Initialiser les associations par défaut
+        const initialAssociations: Record<string, any> = {}
+        for (const u of unknown) {
+          initialAssociations[u.chauffeur] = {
+            type: u.similarChauffeurs?.length > 0 ? 'existing' : 'new',
+            sousTraitant: '',
+            existingChauffeur: ''
+          }
+        }
+        setGofoAssociations(initialAssociations)
+        return { needsAssociation: true, unknown: unknown.length }
+      }
+      
+      // ÉTAPE 2: Tous les chauffeurs sont connus, importer directement
       const results: any[] = []
       const pendingFiles = [...files]
       
@@ -648,33 +696,6 @@ function AdminView() {
           results.push({ success: true, file: file.name, result })
         } catch (err: any) {
           const errorData = err?.response?.data
-          
-          // Chauffeur inconnu - besoin d'association
-          if (errorData?.error === 'UNKNOWN_CHAUFFEUR') {
-            // Stocker le fichier en attente et afficher le modal
-            const remainingFiles = pendingFiles.slice(i)
-            setFiles(remainingFiles)
-            setImportProgress(null)
-            setImportType('gofo')
-            
-            setUnknownChauffeurModal({
-              show: true,
-              chauffeur: errorData.chauffeur,
-              filename: errorData.filename || file.name,
-              pendingFile: file,
-              sousTraitants: errorData.sousTraitants || sousTraitants,
-              existingChauffeurs: errorData.existingChauffeurs || [],
-              similarChauffeurs: errorData.similarChauffeurs || []
-            })
-            setSelectedAssociation('')
-            setSelectedExistingChauffeur('')
-            setAssociationType(errorData.similarChauffeurs?.length > 0 ? 'existing' : 'new')
-            
-            // Retourner les résultats partiels
-            return { partial: true, results, remaining: remainingFiles.length }
-          }
-          
-          // Autre erreur - ajouter aux résultats
           results.push({ 
             success: false, 
             file: file.name, 
@@ -685,8 +706,13 @@ function AdminView() {
       
       return { partial: false, results, remaining: 0 }
     },
-    onSuccess: (data) => {
+    onSuccess: (data: any) => {
       setImportProgress(null)
+      
+      // Cas: besoin d'association - le modal est déjà affiché
+      if (data.needsAssociation) {
+        return
+      }
       
       if (data.partial) {
         // Import partiel - modal affiché
@@ -961,21 +987,160 @@ function AdminView() {
     setCaniaoAssociations({})
     setCaniaoNewST('')
     
-    // Relancer l'import
-    if (caniaoMultiModal.pendingFile) {
-      try {
-        const data = await uploadTourCaniao(caniaoMultiModal.pendingFile, selectedDate)
-        setCaniaoFile(null)
-        qc.invalidateQueries({ queryKey: ['tours'] })
-        qc.invalidateQueries({ queryKey: ['stats'] })
-        qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
-        
-        const toursCount = data.tours?.length || 0
-        const totalColis = data.totalColisImported || data.tours?.reduce((sum: number, t: any) => sum + (t.colisCount || 0), 0) || 0
-        alert(`✅ Import CANIAO réussi: ${toursCount} tournée(s), ${totalColis} colis`)
-      } catch (err: any) {
-        alert(`Erreur import: ${err?.response?.data?.message || err?.message}`)
+    // Relancer l'import pour TOUS les fichiers en attente
+    const filesToProcess = [...caniaoExcelFiles]
+    if (filesToProcess.length === 0 && caniaoMultiModal.pendingFile) {
+      filesToProcess.push(caniaoMultiModal.pendingFile)
+    }
+    
+    if (filesToProcess.length > 0) {
+      let totalTours = 0
+      let totalColis = 0
+      const errors: string[] = []
+      
+      for (const file of filesToProcess) {
+        try {
+          const data = await uploadTourCaniao(file, selectedDate)
+          totalTours += data.tours?.length || 0
+          totalColis += data.totalColisImported || 0
+        } catch (err: any) {
+          errors.push(`${file.name}: ${err?.response?.data?.message || err?.message}`)
+        }
       }
+      
+      // Vider les fichiers après traitement
+      setCaniaoExcelFiles([])
+      setCaniaoFile(null)
+      
+      qc.invalidateQueries({ queryKey: ['tours'] })
+      qc.invalidateQueries({ queryKey: ['stats'] })
+      qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
+      
+      if (errors.length > 0) {
+        alert(`✅ Import partiel: ${totalTours} tournée(s), ${totalColis} colis\n\n⚠️ Erreurs:\n${errors.join('\n')}`)
+      } else {
+        alert(`✅ Import CANIAO réussi: ${totalTours} tournée(s), ${totalColis} colis`)
+      }
+    }
+  }
+
+  // Fonction pour associer plusieurs chauffeurs GOFO et importer
+  const handleGofoMultiAssociation = async () => {
+    // Vérifier que tous les chauffeurs ont une association
+    for (const unknown of gofoMultiModal.unknownChauffeurs) {
+      const assoc = gofoAssociations[unknown.chauffeur]
+      if (!assoc) {
+        alert(`Veuillez configurer l'association pour ${unknown.chauffeur}`)
+        return
+      }
+      if (assoc.type === 'new') {
+        if (assoc.createNewST && !assoc.newSTName?.trim()) {
+          alert(`Veuillez entrer le nom du nouveau sous-traitant pour ${unknown.chauffeur}`)
+          return
+        }
+        if (!assoc.createNewST && !assoc.sousTraitant) {
+          alert(`Veuillez sélectionner un sous-traitant pour ${unknown.chauffeur}`)
+          return
+        }
+      }
+      if (assoc.type === 'existing' && !assoc.existingChauffeur) {
+        alert(`Veuillez sélectionner un chauffeur existant pour ${unknown.chauffeur}`)
+        return
+      }
+    }
+    
+    try {
+      // 1. Créer les nouveaux sous-traitants si nécessaire
+      const newSousTraitantsToCreate = new Set<string>()
+      for (const unknown of gofoMultiModal.unknownChauffeurs) {
+        const assoc = gofoAssociations[unknown.chauffeur]
+        if (assoc?.type === 'new' && assoc.createNewST && assoc.newSTName?.trim()) {
+          newSousTraitantsToCreate.add(assoc.newSTName.trim())
+        }
+      }
+      
+      for (const stName of newSousTraitantsToCreate) {
+        try {
+          await api.post('/api/sous-traitants', { name: stName })
+        } catch (err: any) {
+          if (!err?.response?.data?.message?.includes('existe')) {
+            console.error('Erreur création ST:', err)
+          }
+        }
+      }
+      
+      // 2. Créer les associations chauffeur → sous-traitant
+      for (const unknown of gofoMultiModal.unknownChauffeurs) {
+        const assoc = gofoAssociations[unknown.chauffeur]
+        let finalST = ''
+        
+        if (assoc.type === 'existing') {
+          const existing = gofoMultiModal.existingChauffeurs.find(c => c.name === assoc.existingChauffeur)
+          finalST = existing?.sousTraitant || ''
+        } else {
+          finalST = assoc.createNewST ? assoc.newSTName?.trim() || '' : assoc.sousTraitant
+        }
+        
+        if (finalST) {
+          await api.post('/api/chauffeurs', { name: unknown.chauffeur, sousTraitant: finalST })
+        }
+      }
+      
+      // 3. Fermer le modal
+      setGofoMultiModal({
+        show: false,
+        unknownChauffeurs: [],
+        knownChauffeurs: [],
+        sousTraitants: [],
+        existingChauffeurs: [],
+        pendingFiles: []
+      })
+      setGofoAssociations({})
+      
+      // 4. Importer tous les fichiers
+      const results: any[] = []
+      const pendingFiles = gofoMultiModal.pendingFiles
+      
+      setImportProgress({ current: 0, total: pendingFiles.length, results: [] })
+      
+      for (let i = 0; i < pendingFiles.length; i++) {
+        const file = pendingFiles[i]
+        setImportProgress(prev => prev ? { ...prev, current: i + 1 } : null)
+        
+        try {
+          const result = await uploadTour(file, selectedDate, '')
+          results.push({ success: true, file: file.name, result })
+        } catch (err: any) {
+          const errorData = err?.response?.data
+          results.push({ 
+            success: false, 
+            file: file.name, 
+            error: errorData?.message || err?.message || 'Erreur inconnue' 
+          })
+        }
+      }
+      
+      setImportProgress(null)
+      setFiles([])
+      qc.invalidateQueries({ queryKey: ['tours'] })
+      qc.invalidateQueries({ queryKey: ['stats'] })
+      qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
+      qc.invalidateQueries({ queryKey: ['sous-traitants'] })
+      qc.invalidateQueries({ queryKey: ['chauffeurs'] })
+      
+      const successResults = results.filter(r => r.success)
+      const failedResults = results.filter(r => !r.success)
+      const totalColis = successResults.reduce((sum, r) => sum + (r.result?.tour?.colisCount || r.result?.colisCount || 0), 0)
+      
+      let message = `✅ ${successResults.length} tournée(s) importée(s): ${totalColis} colis`
+      if (failedResults.length > 0) {
+        message += `\n\n⚠️ ${failedResults.length} erreur(s):\n` + 
+          failedResults.map(r => `• ${r.file}: ${r.error}`).join('\n')
+      }
+      alert(message)
+      
+    } catch (err: any) {
+      alert(`Erreur: ${err?.response?.data?.message || err?.message}`)
     }
   }
 
@@ -1029,6 +1194,330 @@ function AdminView() {
 
   // État pour savoir quel type d'import est en cours (pour le modal)
   const [importType, setImportType] = useState<'gofo' | 'cainiao'>('gofo')
+
+  // === MODAL DE CONFIRMATION DOUBLONS ===
+  const [duplicateWarningModal, setDuplicateWarningModal] = useState<{
+    show: boolean
+    existingTours: string[]  // Chauffeurs avec tournées existantes
+    duplicatesInImport: string[]  // Chauffeurs en doublon dans l'import
+    importType: 'gofo' | 'cainiao'
+  }>({
+    show: false,
+    existingTours: [],
+    duplicatesInImport: [],
+    importType: 'cainiao'
+  })
+
+  // Fonction pour extraire les noms de chauffeurs des fichiers à importer
+  const extractDriverNamesFromFiles = (files: File[]): string[] => {
+    const names: string[] = []
+    for (const file of files) {
+      // Extraire le nom du fichier sans extension ni date
+      const filename = file.name.replace(/\.(pdf|xlsx)$/i, '')
+      // Pattern: NomChauffeur_JJ_MM ou NomChauffeur JJ-MM ou juste NomChauffeur
+      const match = filename.match(/^([a-zA-ZÀ-ÿ\-_']+)/i)
+      if (match) {
+        const name = match[1].replace(/[_-]/g, ' ').trim()
+        if (name.length >= 2) {
+          names.push(name.charAt(0).toUpperCase() + name.slice(1).toLowerCase())
+        }
+      }
+    }
+    return names
+  }
+
+  // Fonction pour vérifier les doublons avant import Cainiao
+  const checkCaniaoImportDuplicates = () => {
+    if (caniaoExcelFiles.length === 0 || !selectedDate) return
+    
+    // 1. Extraire les noms des fichiers à importer
+    const importNames = extractDriverNamesFromFiles(caniaoExcelFiles)
+    
+    // 2. Vérifier les doublons dans l'import lui-même
+    const nameCounts: Record<string, number> = {}
+    for (const name of importNames) {
+      const normalized = name.toLowerCase()
+      nameCounts[normalized] = (nameCounts[normalized] || 0) + 1
+    }
+    const duplicatesInImport = Object.entries(nameCounts)
+      .filter(([_, count]) => count > 1)
+      .map(([name]) => name.charAt(0).toUpperCase() + name.slice(1))
+    
+    // 3. Vérifier les tournées Cainiao existantes pour cette date
+    const existingCaniaoNames = caniaoTours.map((t: any) => t.chauffeurName?.toLowerCase() || '')
+    const conflictingNames = importNames.filter(name => 
+      existingCaniaoNames.includes(name.toLowerCase())
+    )
+    
+    // 4. Si des conflits, afficher le modal
+    if (duplicatesInImport.length > 0 || conflictingNames.length > 0) {
+      setDuplicateWarningModal({
+        show: true,
+        existingTours: [...new Set(conflictingNames)],
+        duplicatesInImport: [...new Set(duplicatesInImport)],
+        importType: 'cainiao'
+      })
+    } else {
+      // Pas de conflit, lancer l'import directement
+      caniaoUnifiedMutation.mutate()
+    }
+  }
+
+  // Fonction pour vérifier les doublons avant import Gofo
+  const checkGofoImportDuplicates = () => {
+    if (files.length === 0 || !selectedDate) return
+    
+    // 1. Extraire les noms des fichiers à importer
+    const importNames = extractDriverNamesFromFiles(files)
+    
+    // 2. Vérifier les doublons dans l'import lui-même
+    const nameCounts: Record<string, number> = {}
+    for (const name of importNames) {
+      const normalized = name.toLowerCase()
+      nameCounts[normalized] = (nameCounts[normalized] || 0) + 1
+    }
+    const duplicatesInImport = Object.entries(nameCounts)
+      .filter(([_, count]) => count > 1)
+      .map(([name]) => name.charAt(0).toUpperCase() + name.slice(1))
+    
+    // 3. Vérifier les tournées Gofo existantes pour cette date
+    const existingGofoNames = normalTours.map((t: any) => t.chauffeurName?.toLowerCase() || '')
+    const conflictingNames = importNames.filter(name => 
+      existingGofoNames.includes(name.toLowerCase())
+    )
+    
+    // 4. Si des conflits, afficher le modal
+    if (duplicatesInImport.length > 0 || conflictingNames.length > 0) {
+      setDuplicateWarningModal({
+        show: true,
+        existingTours: [...new Set(conflictingNames)],
+        duplicatesInImport: [...new Set(duplicatesInImport)],
+        importType: 'gofo'
+      })
+    } else {
+      // Pas de conflit, lancer l'import directement
+      normalMutation.mutate()
+    }
+  }
+
+  // MUTATION UNIFIÉE CAINIAO - Gère PDF multi-chauffeurs ET Excel/PDF uni-chauffeur
+  const caniaoUnifiedMutation = useMutation({
+    mutationFn: async () => {
+      if (caniaoExcelFiles.length === 0) throw new Error('Aucun fichier sélectionné')
+      if (!selectedDate) throw new Error('Date requise')
+      
+      const results: any[] = []
+      const uniChauffeurFiles: File[] = []
+      const pendingFilesWithUnknowns: { file: File; unknownChauffeurs: any[]; existingChauffeurs: string[]; sousTraitants: string[] }[] = []
+      
+      // Séparer PDF et Excel
+      const pdfFiles = caniaoExcelFiles.filter(f => f.name.toLowerCase().endsWith('.pdf'))
+      const excelFiles = caniaoExcelFiles.filter(f => f.name.toLowerCase().endsWith('.xlsx'))
+      
+      // Les Excel vont directement en uni-chauffeur
+      uniChauffeurFiles.push(...excelFiles)
+      
+      // 1. Traiter TOUS les PDF comme potentiellement multi-chauffeurs
+      // On ne s'arrête plus au premier fichier avec chauffeurs inconnus !
+      for (const file of pdfFiles) {
+        try {
+          const data = await uploadTourCaniao(file, selectedDate)
+          results.push({ 
+            success: true, 
+            file: file.name, 
+            result: data,
+            type: 'multi',
+            toursCount: data.tours?.length || 0,
+            colisCount: data.totalColisImported || 0
+          })
+        } catch (err: any) {
+          const errorData = err?.response?.data
+          
+          // Si UNKNOWN_CHAUFFEURS, collecter pour plus tard (ne pas s'arrêter)
+          if (errorData?.error === 'UNKNOWN_CHAUFFEURS') {
+            pendingFilesWithUnknowns.push({
+              file,
+              unknownChauffeurs: errorData.unknownChauffeurs || [],
+              existingChauffeurs: errorData.existingChauffeurs || [],
+              sousTraitants: errorData.sousTraitants || sousTraitants
+            })
+          }
+          // Si NO_PLAGES, basculer ce PDF vers uni-chauffeur
+          else if (errorData?.error === 'NO_PLAGES' || errorData?.message?.includes('plage')) {
+            uniChauffeurFiles.push(file)
+          } else {
+            results.push({ 
+              success: false, 
+              file: file.name, 
+              error: errorData?.message || err?.message || 'Erreur inconnue',
+              type: 'multi'
+            })
+          }
+        }
+      }
+      
+      // 2. Traiter les fichiers uni-chauffeur (Excel ou PDF sans plages)
+      const pendingUniFiles: { file: File; chauffeur: string; existingChauffeurs: string[]; similarChauffeurs: string[]; sousTraitants: string[] }[] = []
+      
+      for (const file of uniChauffeurFiles) {
+        try {
+          const formData = new FormData()
+          formData.append('file', file)
+          formData.append('date', selectedDate)
+          if (caniaoExcelSousTraitant) {
+            formData.append('sousTraitantName', caniaoExcelSousTraitant)
+          }
+          const { data } = await api.post('/api/tours/import/caniao-excel', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          })
+          results.push({ success: true, file: file.name, result: data, type: 'uni' })
+        } catch (err: any) {
+          const errorData = err?.response?.data
+          
+          // Chauffeur inconnu - collecter pour plus tard
+          if (errorData?.error === 'UNKNOWN_CHAUFFEUR') {
+            pendingUniFiles.push({
+              file,
+              chauffeur: errorData.chauffeur,
+              existingChauffeurs: errorData.existingChauffeurs || [],
+              similarChauffeurs: errorData.similarChauffeurs || [],
+              sousTraitants: errorData.sousTraitants || sousTraitants
+            })
+          } else {
+            results.push({ 
+              success: false, 
+              file: file.name, 
+              error: errorData?.message || err?.message || 'Erreur inconnue',
+              type: 'uni'
+            })
+          }
+        }
+      }
+      
+      // 3. Si des fichiers multi-chauffeurs ont des chauffeurs inconnus, afficher le modal unifié
+      if (pendingFilesWithUnknowns.length > 0) {
+        
+        // Fusionner tous les chauffeurs inconnus de tous les fichiers
+        const allUnknownChauffeurs: any[] = []
+        const allExistingChauffeurs = new Set<string>()
+        const allSousTraitants = new Set<string>()
+        const allPendingFiles: File[] = []
+        
+        for (const pending of pendingFilesWithUnknowns) {
+          allPendingFiles.push(pending.file)
+          pending.existingChauffeurs.forEach(c => allExistingChauffeurs.add(c))
+          pending.sousTraitants.forEach(s => allSousTraitants.add(s))
+          
+          for (const unknown of pending.unknownChauffeurs) {
+            // Éviter les doublons
+            if (!allUnknownChauffeurs.find(u => u.chauffeur === unknown.chauffeur)) {
+              allUnknownChauffeurs.push({
+                ...unknown,
+                sourceFile: pending.file.name
+              })
+            }
+          }
+        }
+        
+        // Stocker tous les fichiers en attente
+        setCaniaoExcelFiles(allPendingFiles)
+        
+        setCaniaoMultiModal({
+          show: true,
+          unknownChauffeurs: allUnknownChauffeurs,
+          sousTraitants: Array.from(allSousTraitants),
+          existingChauffeurs: Array.from(allExistingChauffeurs),
+          pendingFile: allPendingFiles[0], // Premier fichier (pour compatibilité)
+          filename: allPendingFiles.map(f => f.name).join(', ')
+        })
+        
+        const initialAssociations: Record<string, { type: 'new' | 'existing'; sousTraitant: string; existingChauffeur?: string }> = {}
+        for (const unknown of allUnknownChauffeurs) {
+          initialAssociations[unknown.chauffeur] = { type: 'new', sousTraitant: '' }
+        }
+        setCaniaoAssociations(initialAssociations)
+        
+        return { 
+          partial: true, 
+          results, 
+          remaining: allPendingFiles.length, 
+          needsMultiModal: true,
+          pendingUniFiles // Garder aussi les fichiers uni en attente
+        }
+      }
+      
+      // 4. Si des fichiers uni-chauffeur ont des chauffeurs inconnus
+      if (pendingUniFiles.length > 0) {
+        
+        // Afficher le modal pour le premier fichier uni-chauffeur
+        const first = pendingUniFiles[0]
+        const remainingFiles = pendingUniFiles.map(p => p.file)
+        setCaniaoExcelFiles(remainingFiles)
+        setImportType('cainiao')
+        
+        setUnknownChauffeurModal({
+          show: true,
+          chauffeur: first.chauffeur,
+          filename: first.file.name,
+          pendingFile: first.file,
+          sousTraitants: first.sousTraitants,
+          existingChauffeurs: first.existingChauffeurs,
+          similarChauffeurs: first.similarChauffeurs
+        })
+        setSelectedAssociation('')
+        setSelectedExistingChauffeur('')
+        setAssociationType(first.similarChauffeurs?.length > 0 ? 'existing' : 'new')
+        
+        return { partial: true, results, remaining: remainingFiles.length }
+      }
+      
+      return { partial: false, results, remaining: 0 }
+    },
+    onSuccess: (data: any) => {
+      if (data.partial) {
+        const successCount = data.results.filter((r: any) => r.success).length
+        if (successCount > 0) {
+          qc.invalidateQueries({ queryKey: ['tours'] })
+          qc.invalidateQueries({ queryKey: ['stats'] })
+          qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
+        }
+        return
+      }
+      
+      // Import complet
+      setCaniaoExcelFiles([])
+      setCaniaoExcelSousTraitant('')
+      qc.invalidateQueries({ queryKey: ['tours'] })
+      qc.invalidateQueries({ queryKey: ['stats'] })
+      qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
+      
+      const successResults = data.results.filter((r: any) => r.success)
+      const failedResults = data.results.filter((r: any) => !r.success)
+      
+      // Calculer les totaux
+      let totalTours = 0
+      let totalColis = 0
+      for (const r of successResults) {
+        if (r.type === 'multi') {
+          totalTours += r.toursCount || 0
+          totalColis += r.colisCount || 0
+        } else {
+          totalTours += 1
+          totalColis += r.result?.tour?.colisCount || r.result?.colisCount || 0
+        }
+      }
+      
+      let message = `✅ ${totalTours} tournée(s) Cainiao importée(s): ${totalColis} colis`
+      if (failedResults.length > 0) {
+        message += `\n\n⚠️ ${failedResults.length} erreur(s):\n` + 
+          failedResults.map((r: any) => `• ${r.file}: ${r.error}`).join('\n')
+      }
+      alert(message)
+    },
+    onError: (err: any) => {
+      alert(`Erreur: ${err?.response?.data?.message || err?.message}`)
+    },
+  })
 
   // Cainiao Excel/PDF uni-chauffeur mutation - AVEC AUTO-DISPATCH
   const caniaoExcelMutation = useMutation({
@@ -1142,8 +1631,12 @@ function AdminView() {
     queryKey: ['tours', 'caniao', selectedDate],
     queryFn: () => getTours({ date: selectedDate || undefined, isCaniaoOnly: true }),
   })
-  const normalTours = normalData?.tours || []
-  const caniaoTours = caniaoData?.tours || []
+  const normalTours = (normalData?.tours || []).slice().sort((a: any, b: any) => 
+    (a.chauffeurName || '').localeCompare(b.chauffeurName || '', 'fr', { sensitivity: 'base' })
+  )
+  const caniaoTours = (caniaoData?.tours || []).slice().sort((a: any, b: any) => 
+    (a.chauffeurName || '').localeCompare(b.chauffeurName || '', 'fr', { sensitivity: 'base' })
+  )
 
   const deleteMutation = useMutation({
     mutationFn: (tourId: number) => deleteTour(tourId),
@@ -1287,23 +1780,38 @@ function AdminView() {
             <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
               💡 Les chauffeurs connus seront automatiquement dispatchés. Les nouveaux chauffeurs demanderont une association.
             </p>
-            <button className="btn" style={{ marginTop: 12 }} onClick={() => normalMutation.mutate()} disabled={normalMutation.isPending || files.length === 0}>
+            <button className="btn" style={{ marginTop: 12 }} onClick={() => checkGofoImportDuplicates()} disabled={normalMutation.isPending || files.length === 0}>
               {normalMutation.isPending ? 'Import...' : `Importer ${files.length || ''} fichier(s)`}
             </button>
           </div>
 
-          {/* Import Cainiao */}
+          {/* Import Cainiao UNIFIÉ (PDF multi + Excel/PDF uni-chauffeur) */}
           <div className="surface">
-            <p className="card-title">🟣 Import Cainiao (PDF)</p>
+            <p className="card-title">🟣 Import Cainiao</p>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+              PDF multi-chauffeurs ou fichiers Excel/PDF (1 chauffeur/fichier) - auto-dispatch activé
+            </p>
+            <div className="input-group">
+              <label>Sous-traitant (optionnel)</label>
+              <select value={caniaoExcelSousTraitant} onChange={(e) => setCaniaoExcelSousTraitant(e.target.value)}>
+                <option value="">-- Auto-dispatch --</option>
+                {sousTraitants.map(st => <option key={st} value={st}>{st}</option>)}
+              </select>
+            </div>
             <div 
               className="input-group" 
+              style={{ marginTop: 12 }}
               onDragOver={(e) => { e.preventDefault(); setIsCaniaosDragging(true) }}
               onDragLeave={(e) => { e.preventDefault(); setIsCaniaosDragging(false) }}
               onDrop={(e) => {
                 e.preventDefault()
                 setIsCaniaosDragging(false)
-                const droppedFile = Array.from(e.dataTransfer.files).find(f => f.name.endsWith('.pdf'))
-                if (droppedFile) setCaniaoFile(droppedFile)
+                const droppedFiles = Array.from(e.dataTransfer.files).filter(f => 
+                  f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.xlsx')
+                )
+                if (droppedFiles.length > 0) {
+                  setCaniaoExcelFiles(prev => [...prev, ...droppedFiles])
+                }
               }}
             >
               <div 
@@ -1315,88 +1823,49 @@ function AdminView() {
                   cursor: 'pointer',
                   background: isCaniaosDragging ? 'rgba(124, 58, 237, 0.1)' : 'transparent'
                 }}
-                onClick={() => document.getElementById('caniao-file')?.click()}
+                onClick={() => document.getElementById('caniao-unified-file')?.click()}
               >
                 <p style={{ margin: 0, color: '#aaa' }}>
-                  {caniaoFile ? `📄 ${caniaoFile.name}` : '📂 Glissez votre fichier PDF Cainiao ici'}
+                  {caniaoExcelFiles.length === 0 
+                    ? '📂 Glissez vos fichiers PDF ou Excel Cainiao ici' 
+                    : `${caniaoExcelFiles.length} fichier(s) sélectionné(s)`}
                 </p>
               </div>
               <input 
-                id="caniao-file" 
+                id="caniao-unified-file" 
                 type="file" 
-                accept=".pdf" 
-                onChange={(e) => setCaniaoFile(e.target.files?.[0] || null)} 
-                style={{ display: 'none' }} 
-              />
-              {caniaoFile && (
-                <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--panel)', borderRadius: 6 }}>
-                  <span style={{ fontSize: 13 }}>📄 {caniaoFile.name}</span>
-                  <button className="ghost-btn" onClick={() => setCaniaoFile(null)} style={{ color: '#f87b7b' }}>✕</button>
-                </div>
-              )}
-            </div>
-            <button className="btn" style={{ marginTop: 12 }} onClick={() => caniaoMutation.mutate()} disabled={caniaoMutation.isPending || !caniaoFile}>
-              {caniaoMutation.isPending ? 'Import...' : 'Importer Cainiao'}
-            </button>
-          </div>
-
-          {/* Import Cainiao Excel/PDF uni-chauffeur - AVEC AUTO-DISPATCH */}
-          <div className="surface">
-            <p className="card-title">🟣 Import Cainiao (1 chauffeur/fichier)</p>
-            <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>Fichiers Excel ou PDF Cainiao - auto-dispatch activé</p>
-            <div className="input-group">
-              <label>Sous-traitant (optionnel - auto-dispatch)</label>
-              <select value={caniaoExcelSousTraitant} onChange={(e) => setCaniaoExcelSousTraitant(e.target.value)}>
-                <option value="">-- Auto-dispatch --</option>
-                {sousTraitants.map(st => <option key={st} value={st}>{st}</option>)}
-              </select>
-            </div>
-            <div 
-              className="input-group" 
-              style={{ marginTop: 12 }}
-              onDragOver={handleCaniaoExcelDragOver}
-              onDragLeave={handleCaniaoExcelDragLeave}
-              onDrop={handleCaniaoExcelDrop}
-            >
-              <div 
-                style={{ 
-                  border: isCaniaoExcelDragging ? '2px dashed #7c3aed' : '2px dashed #444', 
-                  borderRadius: 8, 
-                  padding: 24, 
-                  textAlign: 'center', 
-                  cursor: 'pointer',
-                  background: isCaniaoExcelDragging ? 'rgba(124, 58, 237, 0.1)' : 'transparent'
-                }}
-                onClick={() => document.getElementById('caniao-excel-file')?.click()}
-              >
-                <p style={{ margin: 0, color: '#aaa' }}>
-                  {caniaoExcelFiles.length === 0 ? '📂 Glissez vos fichiers Excel/PDF Cainiao ici' : `${caniaoExcelFiles.length} fichier(s)`}
-                </p>
-              </div>
-              <input 
-                id="caniao-excel-file" 
-                type="file" 
-                accept=".xlsx,.pdf" 
+                accept=".pdf,.xlsx" 
                 multiple
-                onChange={handleCaniaoExcelFileInput} 
+                onChange={(e) => {
+                  const newFiles = Array.from(e.target.files || [])
+                  setCaniaoExcelFiles(prev => [...prev, ...newFiles])
+                  e.target.value = ''
+                }} 
                 style={{ display: 'none' }} 
               />
               {caniaoExcelFiles.length > 0 && (
                 <div style={{ marginTop: 12 }}>
                   {caniaoExcelFiles.map((f, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--panel)', borderRadius: 6, marginBottom: 6 }}>
-                      <span style={{ fontSize: 13 }}>📄 {f.name}</span>
-                      <button className="ghost-btn" onClick={() => removeCaniaoExcelFile(i)} style={{ color: '#f87b7b' }}>✕</button>
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--panel)', borderRadius: 6, marginBottom: 6 }}>
+                      <span style={{ fontSize: 13 }}>
+                        {f.name.toLowerCase().endsWith('.pdf') ? '📕' : '📗'} {f.name}
+                      </span>
+                      <button className="ghost-btn" onClick={() => setCaniaoExcelFiles(prev => prev.filter((_, idx) => idx !== i))} style={{ color: '#f87b7b', fontSize: 12 }}>✕</button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
             <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
-              💡 Les chauffeurs connus seront automatiquement dispatchés. Les nouveaux chauffeurs demanderont une association.
+              💡 PDF multi-chauffeurs (avec plages) ou Excel/PDF uni-chauffeur détectés automatiquement
             </p>
-            <button className="btn" style={{ marginTop: 12 }} onClick={() => caniaoExcelMutation.mutate()} disabled={caniaoExcelMutation.isPending || caniaoExcelFiles.length === 0}>
-              {caniaoExcelMutation.isPending ? 'Import...' : `Importer ${caniaoExcelFiles.length || ''} fichier(s) Cainiao`}
+            <button 
+              className="btn" 
+              style={{ marginTop: 12 }} 
+              onClick={() => checkCaniaoImportDuplicates()} 
+              disabled={caniaoUnifiedMutation.isPending || caniaoExcelFiles.length === 0}
+            >
+              {caniaoUnifiedMutation.isPending ? 'Import en cours...' : `Importer ${caniaoExcelFiles.length || ''} fichier(s) Cainiao`}
             </button>
           </div>
         </div>
@@ -1752,7 +2221,9 @@ function AdminView() {
 
             {/* Liste des chauffeurs à associer */}
             <div style={{ maxHeight: 400, overflow: 'auto' }}>
-              {caniaoMultiModal.unknownChauffeurs.map((unknown, idx) => {
+              {[...caniaoMultiModal.unknownChauffeurs].sort((a, b) => 
+                (a.chauffeur || '').localeCompare(b.chauffeur || '', 'fr', { sensitivity: 'base' })
+              ).map((unknown, idx) => {
                 const assoc = caniaoAssociations[unknown.chauffeur] || { type: 'new', sousTraitant: '' }
                 
                 return (
@@ -1954,6 +2425,382 @@ function AdminView() {
           </div>
         </div>
       )}
+
+      {/* Modal multi-chauffeurs GOFO */}
+      {gofoMultiModal.show && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'var(--surface)',
+            borderRadius: 12,
+            padding: 24,
+            width: '90%',
+            maxWidth: 600,
+            maxHeight: '90vh',
+            overflow: 'auto',
+            boxShadow: '0 10px 40px rgba(0,0,0,0.5)'
+          }}>
+            <h3 style={{ margin: '0 0 8px 0', color: '#f59e0b' }}>⚠️ Chauffeurs non reconnus</h3>
+            <p style={{ margin: '0 0 16px 0', color: '#aaa', fontSize: 14 }}>
+              {gofoMultiModal.unknownChauffeurs.length} chauffeur(s) doivent être associés à un sous-traitant.
+            </p>
+
+            {/* Liste des chauffeurs à associer */}
+            <div style={{ maxHeight: 400, overflow: 'auto' }}>
+              {[...gofoMultiModal.unknownChauffeurs].sort((a, b) => 
+                (a.chauffeur || '').localeCompare(b.chauffeur || '', 'fr', { sensitivity: 'base' })
+              ).map((unknown, idx) => {
+                const assoc = gofoAssociations[unknown.chauffeur] || { type: 'new', sousTraitant: '' }
+                
+                return (
+                  <div key={idx} style={{ 
+                    background: 'var(--panel)', 
+                    borderRadius: 8, 
+                    padding: 16, 
+                    marginBottom: 12 
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                      <span style={{ fontWeight: 'bold', color: '#fff' }}>🚗 {unknown.chauffeur}</span>
+                      <span style={{ fontSize: 12, color: '#888' }}>Fichier: {unknown.filename}</span>
+                    </div>
+                    
+                    {/* Suggestions si chauffeurs similaires */}
+                    {unknown.similarChauffeurs && unknown.similarChauffeurs.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <span style={{ fontSize: 12, color: '#888' }}>Peut-être :</span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                          {unknown.similarChauffeurs.slice(0, 3).map((similar: any, sIdx: number) => (
+                            <button
+                              key={sIdx}
+                              onClick={() => setGofoAssociations(prev => ({
+                                ...prev,
+                                [unknown.chauffeur]: { type: 'existing', sousTraitant: similar.sousTraitant, existingChauffeur: similar.name }
+                              }))}
+                              style={{
+                                padding: '4px 10px',
+                                borderRadius: 12,
+                                border: 'none',
+                                background: assoc.type === 'existing' && assoc.existingChauffeur === similar.name ? '#7c3aed' : '#333',
+                                color: '#fff',
+                                fontSize: 12,
+                                cursor: 'pointer'
+                              }}
+                            >
+                              {similar.name} ({similar.sousTraitant})
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Sélection du type */}
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                      <button
+                        onClick={() => setGofoAssociations(prev => ({
+                          ...prev,
+                          [unknown.chauffeur]: { type: 'existing', sousTraitant: '', existingChauffeur: '' }
+                        }))}
+                        style={{
+                          flex: 1,
+                          padding: '6px 10px',
+                          border: 'none',
+                          borderRadius: 6,
+                          cursor: 'pointer',
+                          background: assoc.type === 'existing' ? 'var(--accent)' : '#333',
+                          color: assoc.type === 'existing' ? '#fff' : '#aaa',
+                          fontSize: 12
+                        }}
+                      >
+                        🔗 Existant
+                      </button>
+                      <button
+                        onClick={() => setGofoAssociations(prev => ({
+                          ...prev,
+                          [unknown.chauffeur]: { type: 'new', sousTraitant: '', existingChauffeur: undefined }
+                        }))}
+                        style={{
+                          flex: 1,
+                          padding: '6px 10px',
+                          border: 'none',
+                          borderRadius: 6,
+                          cursor: 'pointer',
+                          background: assoc.type === 'new' ? 'var(--accent)' : '#333',
+                          color: assoc.type === 'new' ? '#fff' : '#aaa',
+                          fontSize: 12
+                        }}
+                      >
+                        ➕ Nouveau
+                      </button>
+                    </div>
+                    
+                    {/* Sélection selon le type */}
+                    {assoc.type === 'existing' ? (
+                      <select
+                        value={assoc.existingChauffeur || ''}
+                        onChange={(e) => {
+                          const selected = gofoMultiModal.existingChauffeurs.find(c => c.name === e.target.value)
+                          setGofoAssociations(prev => ({
+                            ...prev,
+                            [unknown.chauffeur]: { 
+                              type: 'existing', 
+                              sousTraitant: selected?.sousTraitant || '', 
+                              existingChauffeur: e.target.value 
+                            }
+                          }))
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: 6,
+                          border: '1px solid #444',
+                          background: 'var(--surface)',
+                          color: '#fff'
+                        }}
+                      >
+                        <option value="">-- Sélectionner un chauffeur existant --</option>
+                        {gofoMultiModal.existingChauffeurs.map(c => (
+                          <option key={c.name} value={c.name}>{c.name} ({c.sousTraitant})</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div>
+                        {!assoc.createNewST ? (
+                          <select
+                            value={assoc.sousTraitant || ''}
+                            onChange={(e) => {
+                              if (e.target.value === '__CREATE_NEW__') {
+                                setGofoAssociations(prev => ({
+                                  ...prev,
+                                  [unknown.chauffeur]: { ...assoc, createNewST: true, sousTraitant: '', newSTName: '' }
+                                }))
+                              } else {
+                                setGofoAssociations(prev => ({
+                                  ...prev,
+                                  [unknown.chauffeur]: { ...assoc, sousTraitant: e.target.value }
+                                }))
+                              }
+                            }}
+                            style={{
+                              width: '100%',
+                              padding: '8px 12px',
+                              borderRadius: 6,
+                              border: '1px solid #444',
+                              background: 'var(--surface)',
+                              color: '#fff'
+                            }}
+                          >
+                            <option value="">-- Sélectionner un sous-traitant --</option>
+                            {gofoMultiModal.sousTraitants.map(st => (
+                              <option key={st} value={st}>{st}</option>
+                            ))}
+                            <option value="__CREATE_NEW__">+ Créer un nouveau sous-traitant</option>
+                          </select>
+                        ) : (
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <input
+                              type="text"
+                              placeholder="Nom du nouveau sous-traitant"
+                              value={assoc.newSTName || ''}
+                              onChange={(e) => setGofoAssociations(prev => ({
+                                ...prev,
+                                [unknown.chauffeur]: { ...assoc, newSTName: e.target.value }
+                              }))}
+                              style={{
+                                flex: 1,
+                                padding: '8px 12px',
+                                borderRadius: 6,
+                                border: '2px solid #7c3aed',
+                                background: 'var(--surface)',
+                                color: '#fff'
+                              }}
+                            />
+                            <button
+                              onClick={() => setGofoAssociations(prev => ({
+                                ...prev,
+                                [unknown.chauffeur]: { ...assoc, createNewST: false, newSTName: '' }
+                              }))}
+                              style={{
+                                padding: '8px 12px',
+                                borderRadius: 6,
+                                border: 'none',
+                                background: '#444',
+                                color: '#fff',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Boutons d'action */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+              <button 
+                className="ghost-btn"
+                onClick={() => {
+                  setGofoMultiModal({
+                    show: false,
+                    unknownChauffeurs: [],
+                    knownChauffeurs: [],
+                    sousTraitants: [],
+                    existingChauffeurs: [],
+                    pendingFiles: []
+                  })
+                  setGofoAssociations({})
+                }}
+              >
+                Annuler
+              </button>
+              <button 
+                className="btn"
+                onClick={handleGofoMultiAssociation}
+                disabled={gofoMultiModal.unknownChauffeurs.some(u => {
+                  const assoc = gofoAssociations[u.chauffeur]
+                  if (!assoc) return true
+                  if (assoc.type === 'existing' && !assoc.existingChauffeur) return true
+                  if (assoc.type === 'new') {
+                    if (assoc.createNewST && !assoc.newSTName?.trim()) return true
+                    if (!assoc.createNewST && !assoc.sousTraitant) return true
+                  }
+                  return false
+                })}
+              >
+                ✓ Confirmer et importer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de confirmation des doublons */}
+      {duplicateWarningModal.show && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'var(--surface)',
+            borderRadius: 12,
+            padding: 24,
+            width: '90%',
+            maxWidth: 500,
+            boxShadow: '0 10px 40px rgba(0,0,0,0.5)'
+          }}>
+            <h3 style={{ margin: '0 0 16px 0', color: '#f59e0b' }}>⚠️ Attention - Doublons détectés</h3>
+            
+            {duplicateWarningModal.existingTours.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <p style={{ margin: '0 0 8px 0', fontWeight: 'bold', color: '#ef4444' }}>
+                  🔄 Tournées {duplicateWarningModal.importType === 'cainiao' ? 'Cainiao' : 'Gofo'} existantes pour cette date :
+                </p>
+                <div style={{ 
+                  background: 'var(--panel)', 
+                  borderRadius: 8, 
+                  padding: 12,
+                  maxHeight: 150,
+                  overflow: 'auto'
+                }}>
+                  {duplicateWarningModal.existingTours.map((name, idx) => (
+                    <span key={idx} style={{ 
+                      display: 'inline-block',
+                      background: '#ef4444',
+                      color: '#fff',
+                      padding: '4px 8px',
+                      borderRadius: 4,
+                      margin: '2px 4px 2px 0',
+                      fontSize: 13
+                    }}>
+                      {name}
+                    </span>
+                  ))}
+                </div>
+                <p style={{ margin: '8px 0 0 0', fontSize: 12, color: '#888' }}>
+                  Ces tournées seront fusionnées (les colis en doublon seront ignorés)
+                </p>
+              </div>
+            )}
+            
+            {duplicateWarningModal.duplicatesInImport.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <p style={{ margin: '0 0 8px 0', fontWeight: 'bold', color: '#f59e0b' }}>
+                  📂 Chauffeurs présents plusieurs fois dans l'import :
+                </p>
+                <div style={{ 
+                  background: 'var(--panel)', 
+                  borderRadius: 8, 
+                  padding: 12,
+                  maxHeight: 150,
+                  overflow: 'auto'
+                }}>
+                  {duplicateWarningModal.duplicatesInImport.map((name, idx) => (
+                    <span key={idx} style={{ 
+                      display: 'inline-block',
+                      background: '#f59e0b',
+                      color: '#000',
+                      padding: '4px 8px',
+                      borderRadius: 4,
+                      margin: '2px 4px 2px 0',
+                      fontSize: 13
+                    }}>
+                      {name}
+                    </span>
+                  ))}
+                </div>
+                <p style={{ margin: '8px 0 0 0', fontSize: 12, color: '#888' }}>
+                  Les colis seront fusionnés sans doublons
+                </p>
+              </div>
+            )}
+            
+            <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+              <button 
+                className="ghost-btn" 
+                onClick={() => setDuplicateWarningModal({ show: false, existingTours: [], duplicatesInImport: [], importType: 'cainiao' })}
+                style={{ flex: 1, padding: '12px 16px' }}
+              >
+                ❌ Annuler
+              </button>
+              <button 
+                className="btn" 
+                onClick={() => {
+                  const importType = duplicateWarningModal.importType
+                  setDuplicateWarningModal({ show: false, existingTours: [], duplicatesInImport: [], importType: 'cainiao' })
+                  if (importType === 'gofo') {
+                    normalMutation.mutate()
+                  } else {
+                    caniaoUnifiedMutation.mutate()
+                  }
+                }}
+                style={{ flex: 1, padding: '12px 16px', background: '#22c55e' }}
+              >
+                ✅ Fusionner et importer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {importProgress && (
         <div style={{
           position: 'fixed',

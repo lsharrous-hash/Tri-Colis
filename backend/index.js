@@ -111,15 +111,12 @@ function normalizeDriverName(name) {
   // Enlever les caractères spéciaux au début
   normalized = normalized.replace(/^[_\-\s]+/, '');
   
-  console.log(`normalizeDriverName: "${name}" -> "${normalized}"`);
   return normalized;
 }
 
 function areDriverNamesMatching(name1, name2, threshold = 2) {
   const n1 = normalizeDriverName(name1);
   const n2 = normalizeDriverName(name2);
-  
-  console.log('DEBUG', 'Comparing driver names', { name1, name2, n1, n2 });
   
   // Exact match après normalisation
   if (n1 === n2) return true;
@@ -137,9 +134,6 @@ function areDriverNamesMatching(name1, name2, threshold = 2) {
 
 // Fonction pour trouver les chauffeurs mutualisables
 function findMutualizedDrivers(date, sousTraitant) {
-  console.log('=== FIND MUTUALIZED DRIVERS ===');
-  console.log('Input: date=', date, 'sousTraitant=', sousTraitant);
-  
   // Récupérer les tournées optimisées (dispatcher import avec isOptimized)
   const optimizedTours = TOURS.filter(t => 
     t.date === date && 
@@ -156,9 +150,6 @@ function findMutualizedDrivers(date, sousTraitant) {
     (sousTraitant ? t.sousTraitantName === sousTraitant : true)
   );
   
-  console.log('Optimized tours:', optimizedTours.length);
-  console.log('Manual dispatcher tours:', manualDispatcherTours.length);
-  
   // Récupérer les tournées Gofo (non-Cainiao, non-dispatcher) pour cette date
   const gofoTours = TOURS.filter(t => 
     t.date === date && 
@@ -166,24 +157,16 @@ function findMutualizedDrivers(date, sousTraitant) {
     !t.isDispatcherImport
   );
   
-  console.log('All Gofo tours for date:', gofoTours.length);
-  console.log('Gofo tours:', gofoTours.map(t => ({ name: t.chauffeurName, st: t.sousTraitantName })));
-  
   // Si un sous-traitant est spécifié (dispatcher), filtrer les Gofo
   const filteredGofoTours = sousTraitant 
     ? gofoTours.filter(t => t.sousTraitantName === sousTraitant)
     : gofoTours;
-  
-  console.log('Filtered Gofo tours:', filteredGofoTours.length);
   
   // Récupérer les tournées Cainiao pour cette date (toujours toutes)
   const caniaoTours = TOURS.filter(t => 
     t.date === date && 
     t.isCaniao === true
   );
-  
-  console.log('Cainiao tours:', caniaoTours.length);
-  console.log('Cainiao tours:', caniaoTours.map(t => ({ name: t.chauffeurName, isCaniao: t.isCaniao })));
   
   // Créer un map des chauffeurs avec leurs colis
   const driversMap = new Map();
@@ -197,8 +180,6 @@ function findMutualizedDrivers(date, sousTraitant) {
     // Utiliser les compteurs mémorisés s'ils existent
     const gofoCount = tour.originalGofoCount || 0;
     const caniaoCount = tour.originalCaniaoCount || 0;
-    
-    console.log('Adding OPTIMIZED tour:', displayName, 'colis:', tourColisCount, 'gofo:', gofoCount, 'cainiao:', caniaoCount);
     
     driversMap.set(normalizedName, {
       name: displayName,
@@ -220,8 +201,6 @@ function findMutualizedDrivers(date, sousTraitant) {
     const normalizedName = normalizeDriverName(tour.chauffeurName);
     const displayName = tour.chauffeurName.trim();
     const tourColisCount = tour.colisCount || COLIS.filter(c => c.tourId === tour.id).length;
-    
-    console.log('Adding MANUAL DISPATCHER tour:', displayName, 'colis:', tourColisCount);
     
     // Si déjà dans le map (même nom normalisé), additionner
     if (driversMap.has(normalizedName)) {
@@ -251,14 +230,11 @@ function findMutualizedDrivers(date, sousTraitant) {
     
     // Skip si déjà optimisé
     if (driversMap.has(normalizedName) && driversMap.get(normalizedName).isOptimized) {
-      console.log('Skip Gofo tour (already optimized):', displayName);
       continue;
     }
     
     // Calculer colisCount si absent
     const tourColisCount = tour.colisCount || COLIS.filter(c => c.tourId === tour.id).length;
-    
-    console.log('DEBUG', 'Processing Gofo tour', { chauffeur: tour.chauffeurName, normalized: normalizedName, colisCount: tourColisCount });
     
     if (!driversMap.has(normalizedName)) {
       // Chercher le sous-traitant dans chauffeurs.json si pas dans la tournée
@@ -293,18 +269,14 @@ function findMutualizedDrivers(date, sousTraitant) {
     // Calculer colisCount si absent (pour les anciennes tournées)
     const tourColisCount = tour.colisCount || COLIS.filter(c => c.tourId === tour.id).length;
     
-    console.log('DEBUG', 'Processing Cainiao tour', { chauffeur: tour.chauffeurName, normalized: normalizedCaniaoName, colisCount: tourColisCount });
-    
     // Chercher un match dans les chauffeurs existants (par nom normalisé)
     for (const [existingNormName, driver] of driversMap.entries()) {
       if (existingNormName === normalizedCaniaoName || areDriverNamesMatching(tour.chauffeurName, driver.name)) {
         // Si le chauffeur est déjà optimisé, on skip (les colis sont déjà dans la tournée optimisée)
         if (driver.isOptimized) {
-          console.log('Skip Cainiao (driver already optimized):', tour.chauffeurName);
           matched = true;
           break;
         }
-        console.log('DEBUG', 'Match found!', { cainiao: tour.chauffeurName, gofo: driver.name });
         driver.caniaoTourIds.push(tour.id);
         driver.caniaoColisCount += tourColisCount;
         matched = true;
@@ -314,12 +286,10 @@ function findMutualizedDrivers(date, sousTraitant) {
     
     // Si pas de match, créer une nouvelle entrée (chauffeur Cainiao uniquement)
     if (!matched) {
-      console.log('No match for Cainiao:', tour.chauffeurName);
       const displayName = tour.chauffeurName.charAt(0).toUpperCase() + tour.chauffeurName.slice(1).toLowerCase();
       // Chercher le sous-traitant dans chauffeurs.json OU depuis la tournée
       const sousTraitantFromMapping = findSousTraitantForChauffeur(tour.chauffeurName);
       const finalSousTraitant = tour.sousTraitantName || sousTraitantFromMapping || null;
-      console.log('DEBUG Cainiao-only driver sous-traitant:', { chauffeur: tour.chauffeurName, fromTour: tour.sousTraitantName, fromMapping: sousTraitantFromMapping, final: finalSousTraitant });
       driversMap.set(normalizedCaniaoName, {
         name: displayName,
         normalizedName: normalizedCaniaoName,
@@ -332,11 +302,7 @@ function findMutualizedDrivers(date, sousTraitant) {
     }
   }
   
-  console.log('=== FINAL DRIVERS MAP ===');
-  const result = Array.from(driversMap.values());
-  result.forEach(d => console.log(`Driver: ${d.name}, Gofo: ${d.gofoColisCount}, Cainiao: ${d.caniaoColisCount}`));
-  
-  return result;
+  return Array.from(driversMap.values());
 }
 
 // Fonction pour récupérer les colis mutualisés d'un chauffeur
@@ -344,9 +310,19 @@ function getMutualizedColisForDriver(driverName, date, sousTraitant) {
   const drivers = findMutualizedDrivers(date, sousTraitant);
   const driver = drivers.find(d => areDriverNamesMatching(d.name, driverName));
   
-  if (!driver) return [];
+  if (!driver) {
+    return [];
+  }
   
+  // Inclure tous les tour IDs possibles
   const allTourIds = [...driver.gofoTourIds, ...driver.caniaoTourIds];
+  if (driver.optimizedTourId) {
+    allTourIds.push(driver.optimizedTourId);
+  }
+  if (driver.dispatcherTourId) {
+    allTourIds.push(driver.dispatcherTourId);
+  }
+  
   const colis = COLIS.filter(c => allTourIds.includes(c.tourId));
   
   // Trier par source (Gofo d'abord) puis par tracking
@@ -768,7 +744,17 @@ function getAllSousTraitants() {
   
   const fromMapping = CHAUFFEURS_MAPPING.sousTraitants || [];
   
-  return [...new Set([...fromUsers, ...fromMapping])]
+  // Aussi récupérer les sous-traitants depuis les chauffeurs
+  const fromChauffeurs = (CHAUFFEURS_MAPPING.chauffeurs || [])
+    .map(c => c.sousTraitant)
+    .filter(Boolean);
+  
+  // Et depuis les tournées existantes
+  const fromTours = TOURS
+    .map(t => t.sousTraitantName)
+    .filter(Boolean);
+  
+  return [...new Set([...fromUsers, ...fromMapping, ...fromChauffeurs, ...fromTours])]
     .filter(Boolean)
     .sort();
 }
@@ -787,19 +773,29 @@ function trackingExistsForDate(trackingNumber, date) {
 // Filtrer les colis pour exclure les doublons (même jour)
 // Retourne { uniqueColis: [], duplicates: [], duplicatesInFile: [] }
 function filterDuplicateTrackings(colisArray, date) {
-  // Construire le set des trackings existants pour cette date
-  const existingTrackings = new Set(
-    COLIS
-      .filter(c => c.date === date && c.trackingNumber)
-      .map(c => c.trackingNumber.toUpperCase().trim())
-  );
+  // Construire le set des trackings existants pour cette date AVEC info sur la tournée
+  const existingTrackingsMap = new Map();
+  for (const c of COLIS) {
+    if (c.date === date && c.trackingNumber) {
+      const tracking = c.trackingNumber.toUpperCase().trim();
+      if (!existingTrackingsMap.has(tracking)) {
+        // Trouver la tournée associée pour info
+        const tour = TOURS.find(t => t.id === c.tourId);
+        existingTrackingsMap.set(tracking, {
+          tourId: c.tourId,
+          chauffeur: tour?.chauffeurName || 'Inconnu'
+        });
+      }
+    }
+  }
   
-  console.log(`[DOUBLONS] Date: ${date}, Trackings existants dans BDD: ${existingTrackings.size}`);
+  console.log(`[DOUBLONS] Date: ${date}, Trackings existants dans BDD: ${existingTrackingsMap.size}`);
   
   const uniqueColis = [];
   const duplicates = []; // Déjà dans la BDD
   const duplicatesInFile = []; // Doublons dans le fichier lui-même
   const seenInFile = new Set();
+  const duplicateDetails = new Map(); // Pour savoir chez quel chauffeur le doublon existe
   
   for (const colis of colisArray) {
     // Essayer plusieurs propriétés pour le tracking
@@ -811,8 +807,13 @@ function filterDuplicateTrackings(colisArray, date) {
     }
     
     // Vérifier si déjà dans la BDD
-    if (existingTrackings.has(tracking)) {
+    if (existingTrackingsMap.has(tracking)) {
       duplicates.push(tracking);
+      const existingInfo = existingTrackingsMap.get(tracking);
+      if (!duplicateDetails.has(existingInfo.chauffeur)) {
+        duplicateDetails.set(existingInfo.chauffeur, 0);
+      }
+      duplicateDetails.set(existingInfo.chauffeur, duplicateDetails.get(existingInfo.chauffeur) + 1);
       continue;
     }
     
@@ -830,9 +831,17 @@ function filterDuplicateTrackings(colisArray, date) {
     });
   }
   
+  // Log détaillé des doublons par chauffeur
+  if (duplicateDetails.size > 0) {
+    const detailsStr = Array.from(duplicateDetails.entries())
+      .map(([chauffeur, count]) => `${chauffeur}: ${count}`)
+      .join(', ');
+    console.log(`[DOUBLONS] Doublons par chauffeur existant: ${detailsStr}`);
+  }
+  
   console.log(`[DOUBLONS] Résultat: ${colisArray.length} total → ${uniqueColis.length} uniques, ${duplicates.length} doublons BDD, ${duplicatesInFile.length} doublons fichier`);
   
-  return { uniqueColis, duplicates, duplicatesInFile };
+  return { uniqueColis, duplicates, duplicatesInFile, duplicateDetails };
 }
 
 // Ajouter ou mettre à jour un chauffeur dans le mapping
@@ -1764,6 +1773,16 @@ app.post(
 
       log('INFO', 'Plages extraites', { count: plages.length, plages });
 
+      // Si aucune plage détectée, retourner une erreur pour que le frontend traite comme uni-chauffeur
+      if (plages.length === 0) {
+        fs.unlinkSync(uploaded.path);
+        return res.status(400).json({
+          error: "NO_PLAGES",
+          message: "Aucune plage de chauffeurs détectée dans le PDF. Essayez l'import uni-chauffeur.",
+          filename: uploaded.originalname
+        });
+      }
+
       // Utiliser la date fournie dans la requête, sinon extraire du nom de fichier, sinon date du jour
       let tourDate = req.body.date || new Date().toISOString().split('T')[0];
       
@@ -2103,24 +2122,12 @@ app.post(
         // Chercher la colonne tracking (flexible)
         let trackingColIndex = headers.findIndex(h => 
           h.includes('tracking') || 
-          h.includes('numero') || 
-          h.includes('numéro') ||
-          h.includes('colis') ||
-          h.includes('package') ||
-          h.includes('waybill')
+          h.includes('waybill') ||
+          (h.includes('numero') && !h.includes('order')) ||
+          (h.includes('numéro') && !h.includes('order'))
         );
 
-        // Chercher la colonne adresse (flexible)
-        let addressColIndex = headers.findIndex(h => 
-          h.includes('address') || 
-          h.includes('adresse') || 
-          h.includes('receiver') ||
-          h.includes('destinataire') ||
-          h.includes('detail') ||
-          h.includes('street')
-        );
-
-        // Chercher la colonne ville (flexible)
+        // Chercher la colonne ville EN PREMIER (pour éviter le conflit avec adresse)
         let cityColIndex = headers.findIndex(h => 
           h.includes('city') || 
           h.includes('ville') || 
@@ -2129,6 +2136,26 @@ app.post(
           h.includes('localité') ||
           h.includes('locality')
         );
+
+        // Chercher la colonne adresse (exclure la colonne ville si elle contient aussi 'receiver')
+        let addressColIndex = headers.findIndex((h, idx) => {
+          // Ne pas réutiliser la colonne ville
+          if (idx === cityColIndex) return false;
+          // Chercher spécifiquement 'detail address' ou 'address' ou 'adresse'
+          return h.includes('detail address') || 
+                 (h.includes('address') && !h.includes('city')) || 
+                 h.includes('adresse') || 
+                 h.includes('street') ||
+                 h.includes('rue');
+        });
+        
+        // Si pas trouvé, chercher avec 'receiver' mais exclure la ville
+        if (addressColIndex === -1) {
+          addressColIndex = headers.findIndex((h, idx) => {
+            if (idx === cityColIndex) return false;
+            return h.includes('receiver') || h.includes('destinataire') || h.includes('detail');
+          });
+        }
 
         console.log('Tracking col index:', trackingColIndex, 'Address col index:', addressColIndex, 'City col index:', cityColIndex);
 
@@ -2173,7 +2200,7 @@ app.post(
       }
 
       // Filtrer les doublons (déjà importés ce jour-là ou doublons dans le fichier)
-      const { uniqueColis, duplicates, duplicatesInFile } = filterDuplicateTrackings(colisData, date);
+      const { uniqueColis, duplicates, duplicatesInFile, duplicateDetails } = filterDuplicateTrackings(colisData, date);
       
       log('INFO', 'Filtrage doublons Cainiao', {
         total: colisData.length,
@@ -2182,12 +2209,37 @@ app.post(
         duplicatesInFile: duplicatesInFile.length
       });
 
+      // Si tous les colis sont des doublons, retourner un succès avec 0 nouveaux colis
       if (uniqueColis.length === 0) {
-        return res.status(400).json({
-          error: "ALL_DUPLICATES",
-          message: `Tous les ${colisData.length} colis sont déjà importés pour cette date.`,
-          duplicatesCount: duplicates.length,
-          duplicatesInFileCount: duplicatesInFile.length
+        // Vérifier s'il y a une tournée existante pour ce chauffeur
+        const existingTour = TOURS.find(t => 
+          t.chauffeurName?.toLowerCase() === chauffeurName.toLowerCase() && 
+          t.date === date && 
+          t.isCaniao === true
+        );
+        
+        fs.unlinkSync(uploaded.path);
+        
+        // Construire le détail des doublons par chauffeur
+        let duplicateInfo = '';
+        if (duplicateDetails && duplicateDetails.size > 0) {
+          const details = Array.from(duplicateDetails.entries())
+            .map(([chauffeur, count]) => `${chauffeur}: ${count}`)
+            .join(', ');
+          duplicateInfo = ` (Doublons trouvés chez: ${details})`;
+        }
+        
+        return res.json({
+          message: existingTour 
+            ? `Fusion réussie: 0 nouveaux colis (${colisData.length} déjà présents dans la tournée de ${chauffeurName})`
+            : `Aucun nouveau colis: ${colisData.length} colis déjà importés pour cette date${duplicateInfo}`,
+          tour: existingTour || null,
+          colisImported: 0,
+          duplicatesSkipped: duplicates.length,
+          duplicatesInFile: duplicatesInFile.length,
+          totalInFile: colisData.length,
+          alreadyExists: true,
+          duplicatesByDriver: duplicateDetails ? Object.fromEntries(duplicateDetails) : {}
         });
       }
 
@@ -2393,13 +2445,6 @@ app.post(
       // Lecture du fichier
       let colisForTour = [];
       const ext = path.extname(uploaded.originalname).toLowerCase();
-      
-      console.log('========================================');
-      console.log('DEBUG IMPORT - Route /api/tours/import');
-      console.log('Fichier:', uploaded.originalname);
-      console.log('Extension détectée:', ext);
-      console.log('Path:', uploaded.path);
-      console.log('========================================');
 
       if (ext === ".pdf") {
         // Fichier PDF - utiliser pdfplumber (Python) pour extraire les tableaux
@@ -2424,7 +2469,7 @@ app.post(
       }
 
       // Filtrer les doublons (déjà importés ce jour-là ou doublons dans le fichier)
-      const { uniqueColis, duplicates, duplicatesInFile } = filterDuplicateTrackings(colisForTour, date);
+      const { uniqueColis, duplicates, duplicatesInFile, duplicateDetails } = filterDuplicateTrackings(colisForTour, date);
       
       log('INFO', 'Filtrage doublons Gofo', {
         total: colisForTour.length,
@@ -2433,12 +2478,37 @@ app.post(
         duplicatesInFile: duplicatesInFile.length
       });
 
+      // Si tous les colis sont des doublons, retourner un succès avec 0 nouveaux colis
       if (uniqueColis.length === 0) {
-        return res.status(400).json({
-          error: "ALL_DUPLICATES",
-          message: `Tous les ${colisForTour.length} colis sont déjà importés pour cette date.`,
-          duplicatesCount: duplicates.length,
-          duplicatesInFileCount: duplicatesInFile.length
+        // Vérifier s'il y a une tournée existante pour ce chauffeur
+        const existingTour = TOURS.find(t => 
+          t.chauffeurName?.toLowerCase() === chauffeurName.toLowerCase() && 
+          t.date === date && 
+          !t.isCaniao
+        );
+        
+        fs.unlinkSync(uploaded.path);
+        
+        // Construire le détail des doublons par chauffeur
+        let duplicateInfo = '';
+        if (duplicateDetails && duplicateDetails.size > 0) {
+          const details = Array.from(duplicateDetails.entries())
+            .map(([chauffeur, count]) => `${chauffeur}: ${count}`)
+            .join(', ');
+          duplicateInfo = ` (Doublons trouvés chez: ${details})`;
+        }
+        
+        return res.json({
+          message: existingTour 
+            ? `Fusion réussie: 0 nouveaux colis (${colisForTour.length} déjà présents dans la tournée de ${chauffeurName})`
+            : `Aucun nouveau colis: ${colisForTour.length} colis déjà importés pour cette date${duplicateInfo}`,
+          tour: existingTour || null,
+          colisImported: 0,
+          duplicatesSkipped: duplicates.length,
+          duplicatesInFile: duplicatesInFile.length,
+          totalInFile: colisForTour.length,
+          alreadyExists: true,
+          duplicatesByDriver: duplicateDetails ? Object.fromEntries(duplicateDetails) : {}
         });
       }
 
@@ -2755,16 +2825,6 @@ function parseExcelColis(filePath) {
     const sheet = workbook.Sheets[sheetName];
     // Convertir en JSON
     const data = XLSX.utils.sheet_to_json(sheet);
-    console.log('=== DEBUG EXCEL ===');
-    console.log('Nombre de lignes:', data.length);
-    console.log('Colonnes brutes:', JSON.stringify(Object.keys(data[0] || {})));
-    console.log('Première ligne complète:', JSON.stringify(data[0]));
-    // Afficher les codes de caractères des noms de colonnes pour détecter les caractères invisibles
-    if (data[0]) {
-      Object.keys(data[0]).forEach(key => {
-        console.log(`Colonne "${key}" -> codes:`, [...key].map(c => c.charCodeAt(0)));
-      });
-    }
     log('INFO', 'Excel parsé', { lignes: data.length, colonnes: Object.keys(data[0] || {}) });
 
     // Définir les variantes acceptées pour chaque champ
@@ -2802,14 +2862,7 @@ function parseExcelColis(filePath) {
       const tracking = findValue(row, trackingKeys);
       const address = findValue(row, addressKeys) || 'Adresse non disponible';
       const city = findValue(row, cityKeys) || '';
-      // Log les 3 premières lignes pour debug
-      if (i < 3) {
-        console.log(`=== Ligne ${i} ===`);
-        console.log('Row brute:', JSON.stringify(row));
-        console.log('Tracking trouvé:', tracking);
-        console.log('Address trouvé:', address);
-        console.log('City trouvé:', city);
-      }
+      
       if (tracking && tracking.toString().trim()) {
         colisForTour.push({
           orderNumber: "#",  // Pas de numéro d'ordre dans ce format
@@ -2819,8 +2872,6 @@ function parseExcelColis(filePath) {
         });
       }
     }
-    console.log('=== RÉSULTAT FINAL ===');
-    console.log('Colis détectés:', colisForTour.length);
 
     log('INFO', 'Parsing Excel terminé', {
       total: colisForTour.length,
@@ -2890,6 +2941,142 @@ app.delete("/api/tours/:id", authMiddleware(["ADMIN", "DISPATCHER"]), (req, res)
   });
 });
 
+// === DIAGNOSTIC: Voir les colis par date et détecter les orphelins ===
+app.get("/api/diagnostic/colis", (req, res) => {
+  // Auth manuelle pour permettre token en query param
+  const token = req.query.token || req.headers.authorization?.replace('Bearer ', '');
+  if (!token) {
+    return res.status(401).json({ error: "UNAUTHORIZED", message: "Token manquant. Ajouter ?token=VOTRE_TOKEN" });
+  }
+  
+  const session = SESSIONS.find(s => s.token === token && new Date(s.expiresAt) > new Date());
+  if (!session) {
+    return res.status(401).json({ error: "UNAUTHORIZED", message: "Token invalide ou expiré" });
+  }
+  
+  const user = USERS.find(u => u.id === session.userId);
+  if (!user || user.role !== 'ADMIN') {
+    return res.status(403).json({ error: "FORBIDDEN", message: "Accès réservé aux administrateurs" });
+  }
+  const { date } = req.query;
+  
+  // Trouver tous les IDs de tournées existantes
+  const existingTourIds = new Set(TOURS.map(t => t.id));
+  
+  // Trouver les colis orphelins (sans tournée associée)
+  const orphanColis = COLIS.filter(c => !existingTourIds.has(c.tourId));
+  
+  // Statistiques par date
+  const colisParDate = {};
+  for (const colis of COLIS) {
+    if (!colisParDate[colis.date]) {
+      colisParDate[colis.date] = { total: 0, orphans: 0, byTour: {} };
+    }
+    colisParDate[colis.date].total++;
+    if (!existingTourIds.has(colis.tourId)) {
+      colisParDate[colis.date].orphans++;
+    }
+    // Grouper par tournée
+    const tour = TOURS.find(t => t.id === colis.tourId);
+    const tourKey = tour ? `${tour.chauffeurName} (ID:${tour.id})` : `ORPHELIN (tourId:${colis.tourId})`;
+    if (!colisParDate[colis.date].byTour[tourKey]) {
+      colisParDate[colis.date].byTour[tourKey] = 0;
+    }
+    colisParDate[colis.date].byTour[tourKey]++;
+  }
+  
+  // Si une date spécifique est demandée
+  let dateStats = null;
+  if (date) {
+    const colisForDate = COLIS.filter(c => c.date === date);
+    const toursForDate = TOURS.filter(t => t.date === date);
+    
+    dateStats = {
+      date,
+      totalColis: colisForDate.length,
+      totalTours: toursForDate.length,
+      orphanColis: colisForDate.filter(c => !existingTourIds.has(c.tourId)).length,
+      tours: toursForDate.map(t => ({
+        id: t.id,
+        chauffeur: t.chauffeurName,
+        sousTraitant: t.sousTraitantName,
+        isCaniao: t.isCaniao,
+        colisCount: t.colisCount,
+        actualColisCount: COLIS.filter(c => c.tourId === t.id).length
+      })),
+      colisDistribution: {}
+    };
+    
+    // Distribution des colis par chauffeur
+    for (const colis of colisForDate) {
+      const tour = TOURS.find(t => t.id === colis.tourId);
+      const key = tour ? tour.chauffeurName : `ORPHELIN_${colis.tourId}`;
+      if (!dateStats.colisDistribution[key]) {
+        dateStats.colisDistribution[key] = 0;
+      }
+      dateStats.colisDistribution[key]++;
+    }
+  }
+  
+  res.json({
+    summary: {
+      totalColis: COLIS.length,
+      totalTours: TOURS.length,
+      totalOrphans: orphanColis.length,
+      dates: Object.keys(colisParDate).length
+    },
+    orphansByTourId: orphanColis.reduce((acc, c) => {
+      acc[c.tourId] = (acc[c.tourId] || 0) + 1;
+      return acc;
+    }, {}),
+    colisParDate,
+    dateStats
+  });
+});
+
+// === NETTOYAGE: Supprimer les colis orphelins ===
+app.delete("/api/diagnostic/orphans", (req, res) => {
+  // Auth manuelle pour permettre token en query param
+  const token = req.query.token || req.headers.authorization?.replace('Bearer ', '');
+  if (!token) {
+    return res.status(401).json({ error: "UNAUTHORIZED", message: "Token manquant" });
+  }
+  
+  const session = SESSIONS.find(s => s.token === token && new Date(s.expiresAt) > new Date());
+  if (!session) {
+    return res.status(401).json({ error: "UNAUTHORIZED", message: "Token invalide ou expiré" });
+  }
+  
+  const user = USERS.find(u => u.id === session.userId);
+  if (!user || user.role !== 'ADMIN') {
+    return res.status(403).json({ error: "FORBIDDEN", message: "Accès réservé aux administrateurs" });
+  }
+  const existingTourIds = new Set(TOURS.map(t => t.id));
+  
+  const orphanColis = COLIS.filter(c => !existingTourIds.has(c.tourId));
+  const orphanCount = orphanColis.length;
+  
+  if (orphanCount === 0) {
+    return res.json({ message: "Aucun colis orphelin trouvé", removedCount: 0 });
+  }
+  
+  // Supprimer les orphelins
+  COLIS = COLIS.filter(c => existingTourIds.has(c.tourId));
+  
+  saveDataToFile();
+  
+  log('INFO', 'Colis orphelins supprimés', { removedCount: orphanCount });
+  
+  res.json({
+    message: `${orphanCount} colis orphelins supprimés`,
+    removedCount: orphanCount,
+    orphansByTourId: orphanColis.reduce((acc, c) => {
+      acc[c.tourId] = (acc[c.tourId] || 0) + 1;
+      return acc;
+    }, {})
+  });
+});
+
 // ==============================
 // Gestion utilisateurs (ADMIN)
 // ==============================
@@ -2904,18 +3091,8 @@ app.get("/api/users", requireAdmin, (req, res) => {
 
 // Route publique pour obtenir la liste des sous-traitants (pour les dropdowns)
 app.get("/api/sous-traitants", authMiddleware(), (req, res) => {
-  // Combiner les sous-traitants des users ET du mapping chauffeurs
-  const fromUsers = USERS
-    .map(u => u.sousTraitantName)
-    .filter((name) => name && name !== 'CANIAO');
-  
-  const fromMapping = CHAUFFEURS_MAPPING.sousTraitants || [];
-  
-  const allSousTraitants = [...new Set([...fromUsers, ...fromMapping])]
-    .filter(Boolean)
-    .sort();
-  
-  res.json({ sousTraitants: allSousTraitants });
+  // Utiliser la fonction centralisée
+  res.json({ sousTraitants: getAllSousTraitants() });
 });
 
 // ==============================
@@ -3150,6 +3327,61 @@ app.get("/api/chauffeurs/lookup/:name", authMiddleware(["ADMIN"]), (req, res) =>
     chauffeur: name,
     sousTraitant: sousTraitant,
     found: sousTraitant !== null
+  });
+});
+
+// API pour vérifier plusieurs chauffeurs (noms de fichiers) en une fois
+// Retourne les chauffeurs connus et inconnus
+app.post("/api/chauffeurs/check-batch", authMiddleware(["ADMIN"]), (req, res) => {
+  const { filenames } = req.body;
+  
+  if (!filenames || !Array.isArray(filenames)) {
+    return res.status(400).json({
+      error: "INVALID_INPUT",
+      message: "Un tableau de noms de fichiers est requis"
+    });
+  }
+  
+  const known = [];
+  const unknown = [];
+  const existingChauffeurs = CHAUFFEURS_MAPPING.chauffeurs.map(c => ({
+    name: c.name,
+    sousTraitant: c.sousTraitant,
+    normalized: c.normalized
+  }));
+  
+  for (const filename of filenames) {
+    const chauffeurName = extractChauffeurFromFilename(filename);
+    const sousTraitant = findSousTraitantForChauffeur(chauffeurName);
+    
+    if (sousTraitant) {
+      known.push({
+        filename,
+        chauffeur: chauffeurName,
+        sousTraitant
+      });
+    } else {
+      // Chercher les chauffeurs similaires
+      const similarChauffeurs = existingChauffeurs.filter(c => {
+        const newNormalized = normalizeDriverName(chauffeurName);
+        return c.normalized.includes(newNormalized.substring(0, 3)) ||
+               newNormalized.includes(c.normalized.substring(0, 3)) ||
+               levenshteinDistance(c.normalized, newNormalized) <= 3;
+      });
+      
+      unknown.push({
+        filename,
+        chauffeur: chauffeurName,
+        similarChauffeurs
+      });
+    }
+  }
+  
+  res.json({
+    known,
+    unknown,
+    sousTraitants: getAllSousTraitants(),
+    existingChauffeurs
   });
 });
 
@@ -3593,18 +3825,18 @@ app.get("/api/dispatcher/tours/:id/download", (req, res) => {
   // Créer le fichier Excel
   const workbook = XLSX.utils.book_new();
   
-  // Préparer les données pour Excel (format simplifié)
+  // Préparer les données pour Excel (format avec Tracking, City, Address)
   const excelData = colis.map((c, index) => {
     const tracking = (c.trackingNumber || c.code || "").replace(/;$/, ''); // Retirer le point-virgule final
     const orderNum = c.orderNumber || (index + 1);
     const address = c.address || "";
-    const time = c.estimatedTime || "";
+    const city = c.city || "";
 
     return {
       "#": orderNum,
-      "Address": address,
-      "Time": time,
-      "Tracking": tracking
+      "Tracking No.": tracking,
+      "Receiver's City": city,
+      "Receiver's Detail Address": address
     };
   });
 
@@ -3614,9 +3846,9 @@ app.get("/api/dispatcher/tours/:id/download", (req, res) => {
   // Définir la largeur des colonnes
   worksheet['!cols'] = [
     { wch: 5 },   // #
-    { wch: 50 },  // Address
-    { wch: 8 },   // Time
-    { wch: 22 }   // Tracking
+    { wch: 25 },  // Tracking No.
+    { wch: 20 },  // Receiver's City
+    { wch: 50 }   // Receiver's Detail Address
   ];
 
   // Ajouter la feuille au classeur
@@ -4233,10 +4465,8 @@ app.delete("/api/admin/users/:id", authMiddleware(["ADMIN"]), (req, res) => {
 // API MUTUALISATION - Liste des chauffeurs mutualisés
 // ==============================
 app.get("/api/mutualized/drivers", authMiddleware(["ADMIN", "DISPATCHER"]), (req, res) => {
-  console.log('=== MUTUALIZED DRIVERS ROUTE CALLED ===');
   try {
     const { date, sousTraitant } = req.query;
-    console.log('Date:', date, 'SousTraitant:', sousTraitant);
     
     if (!date) {
       return res.status(400).json({ error: "MISSING_DATE", message: "La date est requise" });
@@ -4244,11 +4474,8 @@ app.get("/api/mutualized/drivers", authMiddleware(["ADMIN", "DISPATCHER"]), (req
     
     // Pour un dispatcher, filtrer par son sous-traitant
     const filterSousTraitant = req.user.role === "DISPATCHER" ? req.user.sousTraitantName : sousTraitant;
-    console.log('FilterSousTraitant:', filterSousTraitant);
     
     const drivers = findMutualizedDrivers(date, filterSousTraitant);
-    console.log('Drivers found:', drivers.length);
-    console.log('Drivers detail:', JSON.stringify(drivers, null, 2));
     
     log('INFO', 'Liste chauffeurs mutualisés', { 
       date, 
@@ -4327,20 +4554,43 @@ app.get("/api/mutualized/driver/:name/export", authMiddleware(["ADMIN", "DISPATC
     const { name } = req.params;
     const { date, sousTraitant, source } = req.query;
     
+    console.log('========================================');
+    console.log('EXPORT REQUEST');
+    console.log('Driver name:', name);
+    console.log('Date:', date);
+    console.log('Source:', source);
+    console.log('SousTraitant query:', sousTraitant);
+    console.log('User role:', req.user.role);
+    console.log('User sousTraitant:', req.user.sousTraitantName);
+    console.log('========================================');
+    
     if (!date) {
       return res.status(400).json({ error: "MISSING_DATE", message: "La date est requise" });
     }
     
     const filterSousTraitant = req.user.role === "DISPATCHER" ? req.user.sousTraitantName : sousTraitant;
     
+    console.log('Filter sousTraitant:', filterSousTraitant);
+    
     let colis = getMutualizedColisForDriver(name, date, filterSousTraitant);
     
+    console.log('Colis found before source filter:', colis.length);
+    
     // Filtrer par source si spécifié (gofo ou cainiao uniquement)
+    // Note: isCaniao est sur la tournée, pas sur le colis
     if (source === 'gofo') {
-      colis = colis.filter(c => !c.isCaniao);
+      colis = colis.filter(c => {
+        const tour = TOURS.find(t => t.id === c.tourId);
+        return tour && !tour.isCaniao;
+      });
     } else if (source === 'cainiao') {
-      colis = colis.filter(c => c.isCaniao === true);
+      colis = colis.filter(c => {
+        const tour = TOURS.find(t => t.id === c.tourId);
+        return tour && tour.isCaniao === true;
+      });
     }
+    
+    console.log('Colis found after source filter:', colis.length);
     
     if (colis.length === 0) {
       return res.status(404).json({ error: "NO_COLIS", message: "Aucun colis trouvé pour ce chauffeur" });
