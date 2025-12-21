@@ -1,0 +1,20 @@
+{
+  "prefixes": [
+    {
+      "prefix": "DOFR",
+      "type": "caniao",
+      "description": "Cainiao - Préfixe DO"
+    },
+    {
+      "prefix": "CNFR",
+      "type": "caniao",
+      "description": "Cainiao - Préfixe CN"
+    },
+    {
+      "prefix": "GFFR",
+      "type": "gofo",
+      "description": "Gofo - Préfixe GF"
+    }
+  ],
+  "lastUpdated": "2025-12-21T00:05:35.915Z"
+}

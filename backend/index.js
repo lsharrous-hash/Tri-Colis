@@ -363,7 +363,120 @@ const DATA_FILE = path.join(DATA_DIR, "data.json");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const CHAUFFEURS_FILE = path.join(DATA_DIR, "chauffeurs.json");
+const TRACKING_PATTERNS_FILE = path.join(DATA_DIR, "tracking-patterns.json");
 const LOG_FILE = path.join(__dirname, "logs.txt"); // Logs restent locaux
+
+// ==============================
+// Patterns de tracking (préfixes connus)
+// ==============================
+let TRACKING_PATTERNS = {
+  prefixes: [
+    { prefix: 'DOFR', type: 'caniao', description: 'Cainiao - Préfixe DO' },
+    { prefix: 'CNFR', type: 'caniao', description: 'Cainiao - Préfixe CN' },
+    { prefix: 'GFFR', type: 'gofo', description: 'Gofo - Préfixe GF' }
+  ],
+  lastUpdated: new Date().toISOString()
+};
+
+function loadTrackingPatterns() {
+  if (!fs.existsSync(TRACKING_PATTERNS_FILE)) {
+    log('INFO', 'Création du fichier tracking-patterns.json avec patterns par défaut');
+    saveTrackingPatterns();
+    return;
+  }
+  try {
+    const raw = fs.readFileSync(TRACKING_PATTERNS_FILE, 'utf8');
+    TRACKING_PATTERNS = JSON.parse(raw);
+    log('INFO', 'Patterns de tracking chargés', { count: TRACKING_PATTERNS.prefixes.length });
+  } catch (e) {
+    log('ERROR', 'Erreur chargement patterns tracking', { error: e.message });
+  }
+}
+
+function saveTrackingPatterns() {
+  try {
+    TRACKING_PATTERNS.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(TRACKING_PATTERNS_FILE, JSON.stringify(TRACKING_PATTERNS, null, 2), 'utf8');
+    log('INFO', 'Patterns de tracking sauvegardés', { count: TRACKING_PATTERNS.prefixes.length });
+    return true;
+  } catch (e) {
+    log('ERROR', 'Erreur sauvegarde patterns tracking', { error: e.message });
+    return false;
+  }
+}
+
+// Détecter le type d'un tracking basé sur son préfixe
+function detectTrackingType(trackingNumber) {
+  if (!trackingNumber) return { type: 'unknown', prefix: null };
+  
+  const tracking = trackingNumber.toString().toUpperCase().trim();
+  
+  // Chercher un préfixe correspondant (du plus long au plus court)
+  const sortedPrefixes = [...TRACKING_PATTERNS.prefixes].sort((a, b) => b.prefix.length - a.prefix.length);
+  
+  for (const pattern of sortedPrefixes) {
+    if (tracking.startsWith(pattern.prefix.toUpperCase())) {
+      return { 
+        type: pattern.type, 
+        prefix: pattern.prefix,
+        description: pattern.description 
+      };
+    }
+  }
+  
+  // Extraire le préfixe inconnu (4 premiers caractères alphanumériques)
+  const unknownPrefix = tracking.substring(0, 4).replace(/[^A-Z0-9]/g, '');
+  return { type: 'unknown', prefix: unknownPrefix };
+}
+
+// Vérifier tous les trackings d'une liste et retourner les patterns inconnus
+function checkTrackingsForUnknownPatterns(trackings) {
+  const unknownPrefixes = new Map();
+  const typeMismatch = [];
+  
+  for (const tracking of trackings) {
+    const result = detectTrackingType(tracking);
+    if (result.type === 'unknown' && result.prefix) {
+      if (!unknownPrefixes.has(result.prefix)) {
+        unknownPrefixes.set(result.prefix, { count: 0, examples: [] });
+      }
+      const entry = unknownPrefixes.get(result.prefix);
+      entry.count++;
+      if (entry.examples.length < 3) {
+        entry.examples.push(tracking);
+      }
+    }
+  }
+  
+  return {
+    unknownPrefixes: Array.from(unknownPrefixes.entries()).map(([prefix, data]) => ({
+      prefix,
+      count: data.count,
+      examples: data.examples
+    })),
+    hasUnknown: unknownPrefixes.size > 0
+  };
+}
+
+// Ajouter un nouveau pattern
+function addTrackingPattern(prefix, type, description) {
+  const normalizedPrefix = prefix.toUpperCase().trim();
+  
+  // Vérifier si le préfixe existe déjà
+  const existing = TRACKING_PATTERNS.prefixes.find(p => p.prefix.toUpperCase() === normalizedPrefix);
+  if (existing) {
+    existing.type = type;
+    existing.description = description || existing.description;
+  } else {
+    TRACKING_PATTERNS.prefixes.push({
+      prefix: normalizedPrefix,
+      type: type,
+      description: description || `Ajouté manuellement - ${type}`
+    });
+  }
+  
+  return saveTrackingPatterns();
+}
 
 // ==============================
 // Multer pour upload
@@ -981,6 +1094,7 @@ loadUsersFromFile();
 loadDataFromFile();
 loadSessionsFromFile();
 loadChauffeursFromFile(); // Mapping chauffeur → sous-traitant
+loadTrackingPatterns(); // Patterns de tracking (préfixes Gofo/Cainiao)
 
 // ==============================
 // Synchronisation automatique des sous-traitants
@@ -2199,6 +2313,61 @@ app.post(
         });
       }
 
+      // Vérifier les patterns de tracking inconnus
+      const trackingsList = colisData.map(c => c.trackingNumber);
+      const patternsCheck = checkTrackingsForUnknownPatterns(trackingsList);
+      
+      if (patternsCheck.hasUnknown) {
+        // Retourner une erreur spéciale pour que le frontend puisse afficher le modal
+        return res.status(400).json({
+          error: "UNKNOWN_TRACKING_PATTERNS",
+          message: "Des préfixes de tracking inconnus ont été détectés",
+          unknownPrefixes: patternsCheck.unknownPrefixes,
+          expectedType: 'caniao',
+          totalColis: colisData.length
+        });
+      }
+
+      // Vérifier si les trackings correspondent bien à Cainiao (pas à Gofo)
+      const typeMismatch = [];
+      for (const tracking of trackingsList.slice(0, 30)) { // Vérifier les 30 premiers
+        const detected = detectTrackingType(tracking);
+        if (detected.type !== 'unknown' && detected.type !== 'caniao') {
+          typeMismatch.push({
+            tracking,
+            detectedType: detected.type,
+            prefix: detected.prefix
+          });
+        }
+      }
+      
+      // Si plus de 3 trackings sont d'un autre type, bloquer l'import
+      if (typeMismatch.length >= 3) {
+        const detectedType = typeMismatch[0].detectedType;
+        const mismatchCount = typeMismatch.length;
+        
+        // Vérifier si l'utilisateur a forcé l'import (header spécial)
+        const forceImport = req.headers['x-force-import'] === 'true';
+        
+        if (!forceImport) {
+          return res.status(400).json({
+            error: "TYPE_MISMATCH",
+            message: `Ces colis semblent être de type ${detectedType.toUpperCase()} et non Cainiao`,
+            detectedType: detectedType,
+            expectedType: 'caniao',
+            mismatchCount: mismatchCount,
+            examples: typeMismatch.slice(0, 5).map(m => m.tracking.substring(0, 20)),
+            totalColis: colisData.length
+          });
+        }
+        
+        log('WARN', 'Import Cainiao forcé malgré type mismatch', { 
+          mismatchCount, 
+          detectedType,
+          examples: typeMismatch.slice(0, 3) 
+        });
+      }
+
       // Filtrer les doublons (déjà importés ce jour-là ou doublons dans le fichier)
       const { uniqueColis, duplicates, duplicatesInFile, duplicateDetails } = filterDuplicateTrackings(colisData, date);
       
@@ -2465,6 +2634,61 @@ app.post(
         return res.status(400).json({
           error: "PARSE_ERROR",
           message: "Aucun colis détecté dans le fichier",
+        });
+      }
+
+      // Vérifier les patterns de tracking inconnus
+      const trackingsList = colisForTour.map(c => c.trackingNumber);
+      const patternsCheck = checkTrackingsForUnknownPatterns(trackingsList);
+      
+      if (patternsCheck.hasUnknown) {
+        // Retourner une erreur spéciale pour que le frontend puisse afficher le modal
+        return res.status(400).json({
+          error: "UNKNOWN_TRACKING_PATTERNS",
+          message: "Des préfixes de tracking inconnus ont été détectés",
+          unknownPrefixes: patternsCheck.unknownPrefixes,
+          expectedType: 'gofo',
+          totalColis: colisForTour.length
+        });
+      }
+
+      // Vérifier si les trackings correspondent bien à Gofo
+      const typeMismatch = [];
+      for (const tracking of trackingsList.slice(0, 30)) { // Vérifier les 30 premiers
+        const detected = detectTrackingType(tracking);
+        if (detected.type !== 'unknown' && detected.type !== 'gofo') {
+          typeMismatch.push({
+            tracking,
+            detectedType: detected.type,
+            prefix: detected.prefix
+          });
+        }
+      }
+      
+      // Si plus de 3 trackings sont d'un autre type, bloquer l'import
+      if (typeMismatch.length >= 3) {
+        const detectedType = typeMismatch[0].detectedType;
+        const mismatchCount = typeMismatch.length;
+        
+        // Vérifier si l'utilisateur a forcé l'import (header spécial)
+        const forceImport = req.headers['x-force-import'] === 'true';
+        
+        if (!forceImport) {
+          return res.status(400).json({
+            error: "TYPE_MISMATCH",
+            message: `Ces colis semblent être de type ${detectedType.toUpperCase()} et non Gofo`,
+            detectedType: detectedType,
+            expectedType: 'gofo',
+            mismatchCount: mismatchCount,
+            examples: typeMismatch.slice(0, 5).map(m => m.tracking.substring(0, 20)),
+            totalColis: colisForTour.length
+          });
+        }
+        
+        log('WARN', 'Import Gofo forcé malgré type mismatch', { 
+          mismatchCount, 
+          detectedType,
+          examples: typeMismatch.slice(0, 3) 
         });
       }
 
@@ -3383,6 +3607,122 @@ app.post("/api/chauffeurs/check-batch", authMiddleware(["ADMIN"]), (req, res) =>
     sousTraitants: getAllSousTraitants(),
     existingChauffeurs
   });
+});
+
+// ==============================
+// API PATTERNS DE TRACKING
+// ==============================
+
+// Lister tous les patterns connus
+app.get("/api/tracking-patterns", authMiddleware(["ADMIN"]), (req, res) => {
+  res.json({
+    patterns: TRACKING_PATTERNS.prefixes,
+    lastUpdated: TRACKING_PATTERNS.lastUpdated
+  });
+});
+
+// Ajouter un nouveau pattern
+app.post("/api/tracking-patterns", authMiddleware(["ADMIN"]), (req, res) => {
+  const { prefix, type, description } = req.body;
+  
+  if (!prefix || !type) {
+    return res.status(400).json({ 
+      error: "MISSING_DATA", 
+      message: "Préfixe et type requis" 
+    });
+  }
+  
+  if (!['gofo', 'caniao', 'autre'].includes(type)) {
+    return res.status(400).json({ 
+      error: "INVALID_TYPE", 
+      message: "Type doit être 'gofo', 'caniao' ou 'autre'" 
+    });
+  }
+  
+  const success = addTrackingPattern(prefix, type, description);
+  
+  if (success) {
+    log('INFO', 'Nouveau pattern de tracking ajouté', { prefix, type, description });
+    res.json({ 
+      message: `Pattern ${prefix} ajouté pour ${type}`,
+      patterns: TRACKING_PATTERNS.prefixes
+    });
+  } else {
+    res.status(500).json({ error: "SAVE_ERROR", message: "Erreur lors de la sauvegarde" });
+  }
+});
+
+// Supprimer un pattern
+app.delete("/api/tracking-patterns/:prefix", authMiddleware(["ADMIN"]), (req, res) => {
+  const { prefix } = req.params;
+  const normalizedPrefix = prefix.toUpperCase().trim();
+  
+  const index = TRACKING_PATTERNS.prefixes.findIndex(p => p.prefix.toUpperCase() === normalizedPrefix);
+  
+  if (index === -1) {
+    return res.status(404).json({ 
+      error: "NOT_FOUND", 
+      message: `Pattern ${prefix} non trouvé` 
+    });
+  }
+  
+  const removed = TRACKING_PATTERNS.prefixes.splice(index, 1)[0];
+  const success = saveTrackingPatterns();
+  
+  if (success) {
+    log('INFO', 'Pattern de tracking supprimé', { prefix: removed.prefix, type: removed.type });
+    res.json({ 
+      message: `Pattern ${removed.prefix} supprimé`,
+      patterns: TRACKING_PATTERNS.prefixes
+    });
+  } else {
+    res.status(500).json({ error: "SAVE_ERROR", message: "Erreur lors de la sauvegarde" });
+  }
+});
+
+// Vérifier des trackings et retourner les patterns inconnus
+app.post("/api/tracking-patterns/check", authMiddleware(["ADMIN"]), (req, res) => {
+  const { trackings, expectedType } = req.body;
+  
+  if (!trackings || !Array.isArray(trackings)) {
+    return res.status(400).json({ 
+      error: "MISSING_DATA", 
+      message: "Liste de trackings requise" 
+    });
+  }
+  
+  const result = checkTrackingsForUnknownPatterns(trackings);
+  
+  // Vérifier aussi si des trackings ne correspondent pas au type attendu
+  const typeMismatch = [];
+  if (expectedType) {
+    for (const tracking of trackings) {
+      const detected = detectTrackingType(tracking);
+      if (detected.type !== 'unknown' && detected.type !== expectedType) {
+        typeMismatch.push({
+          tracking,
+          expectedType,
+          detectedType: detected.type,
+          prefix: detected.prefix
+        });
+      }
+    }
+  }
+  
+  res.json({
+    unknownPrefixes: result.unknownPrefixes,
+    hasUnknown: result.hasUnknown,
+    typeMismatch,
+    hasTypeMismatch: typeMismatch.length > 0,
+    totalChecked: trackings.length
+  });
+});
+
+// Détecter le type d'un seul tracking
+app.get("/api/tracking-patterns/detect/:tracking", authMiddleware(["ADMIN", "DISPATCHER"]), (req, res) => {
+  const { tracking } = req.params;
+  const result = detectTrackingType(tracking);
+  res.json(result);
 });
 
 // API pour rafraîchir les sous-traitants des tournées existantes

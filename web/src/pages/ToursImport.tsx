@@ -629,6 +629,41 @@ function AdminView() {
   const [gofoAssociations, setGofoAssociations] = useState<Record<string, { type: 'new' | 'existing'; sousTraitant: string; existingChauffeur?: string; createNewST?: boolean; newSTName?: string }>>({})
   const [gofoCreatingNewST, setGofoCreatingNewST] = useState<string | null>(null)
 
+  // === État pour le modal de patterns de tracking inconnus ===
+  const [unknownPatternsModal, setUnknownPatternsModal] = useState<{
+    show: boolean
+    unknownPrefixes: { prefix: string; count: number; examples: string[] }[]
+    expectedType: 'gofo' | 'caniao' | null
+    pendingAction: (() => void) | null
+  }>({
+    show: false,
+    unknownPrefixes: [],
+    expectedType: null,
+    pendingAction: null
+  })
+  const [patternAssignments, setPatternAssignments] = useState<Record<string, 'gofo' | 'caniao' | 'autre'>>({})
+
+  // === État pour le modal de confirmation type mismatch ===
+  const [typeMismatchModal, setTypeMismatchModal] = useState<{
+    show: boolean
+    detectedType: string
+    expectedType: string
+    mismatchCount: number
+    examples: string[]
+    totalColis: number
+    pendingAction: (() => void) | null
+    importType: 'gofo' | 'caniao'
+  }>({
+    show: false,
+    detectedType: '',
+    expectedType: '',
+    mismatchCount: 0,
+    examples: [],
+    totalColis: 0,
+    pendingAction: null,
+    importType: 'gofo'
+  })
+
   // Sous-traitants
   const { data: sousTraitantsData, refetch: refetchSousTraitants } = useQuery({ queryKey: ['sous-traitants'], queryFn: getSousTraitants })
   const sousTraitants = sousTraitantsData?.sousTraitants || []
@@ -696,6 +731,39 @@ function AdminView() {
           results.push({ success: true, file: file.name, result })
         } catch (err: any) {
           const errorData = err?.response?.data
+          
+          // Patterns de tracking inconnus - afficher le modal
+          if (errorData?.error === 'UNKNOWN_TRACKING_PATTERNS') {
+            setUnknownPatternsModal({
+              show: true,
+              unknownPrefixes: errorData.unknownPrefixes || [],
+              expectedType: errorData.expectedType || 'gofo',
+              pendingAction: () => normalMutation.mutate()
+            })
+            // Initialiser les assignations avec le type attendu par défaut
+            const initialAssignments: Record<string, 'gofo' | 'caniao' | 'autre'> = {}
+            for (const up of (errorData.unknownPrefixes || [])) {
+              initialAssignments[up.prefix] = errorData.expectedType || 'gofo'
+            }
+            setPatternAssignments(initialAssignments)
+            return { results: [], hasUnknownPatterns: true }
+          }
+          
+          // Type mismatch - afficher le modal de confirmation
+          if (errorData?.error === 'TYPE_MISMATCH') {
+            setTypeMismatchModal({
+              show: true,
+              detectedType: errorData.detectedType || '',
+              expectedType: errorData.expectedType || 'gofo',
+              mismatchCount: errorData.mismatchCount || 0,
+              examples: errorData.examples || [],
+              totalColis: errorData.totalColis || 0,
+              pendingAction: () => forceGofoImport(),
+              importType: 'gofo'
+            })
+            return { results: [], hasTypeMismatch: true }
+          }
+          
           results.push({ 
             success: false, 
             file: file.name, 
@@ -708,6 +776,16 @@ function AdminView() {
     },
     onSuccess: (data: any) => {
       setImportProgress(null)
+      
+      // Cas: patterns inconnus - le modal est déjà affiché
+      if (data.hasUnknownPatterns) {
+        return
+      }
+      
+      // Cas: type mismatch - le modal est déjà affiché
+      if (data.hasTypeMismatch) {
+        return
+      }
       
       // Cas: besoin d'association - le modal est déjà affiché
       if (data.needsAssociation) {
@@ -734,14 +812,23 @@ function AdminView() {
       
       const successResults = data.results.filter((r: any) => r.success)
       const failedResults = data.results.filter((r: any) => !r.success)
-      const totalColis = successResults.reduce((sum: number, r: any) => sum + (r.result?.tour?.colisCount || r.result?.colisCount || 0), 0)
-      const totalDuplicates = successResults.reduce((sum: number, r: any) => 
+      
+      // Séparer les imports avec nouveaux colis des fusions sans nouveaux colis
+      const newImports = successResults.filter((r: any) => !r.result?.alreadyExists)
+      const fusionImports = successResults.filter((r: any) => r.result?.alreadyExists)
+      
+      const totalColis = newImports.reduce((sum: number, r: any) => sum + (r.result?.tour?.colisCount || r.result?.colisCount || 0), 0)
+      const totalDuplicates = newImports.reduce((sum: number, r: any) => 
         sum + (r.result?.duplicatesIgnored || 0) + (r.result?.duplicatesInFileIgnored || 0), 0
       )
+      const fusionColis = fusionImports.reduce((sum: number, r: any) => sum + (r.result?.totalInFile || 0), 0)
       
-      let message = `${successResults.length} tournée(s) importée(s): ${totalColis} colis`
+      let message = `${newImports.length} tournée(s) importée(s): ${totalColis} colis`
       if (totalDuplicates > 0) {
         message += ` (${totalDuplicates} doublons ignorés)`
+      }
+      if (fusionImports.length > 0) {
+        message += `\n\nℹ️ ${fusionImports.length} fichier(s) fusionné(s): ${fusionColis} colis déjà présents`
       }
       if (failedResults.length > 0) {
         message += `\n\n⚠️ ${failedResults.length} erreur(s):\n` + 
@@ -1130,9 +1217,18 @@ function AdminView() {
       
       const successResults = results.filter(r => r.success)
       const failedResults = results.filter(r => !r.success)
-      const totalColis = successResults.reduce((sum, r) => sum + (r.result?.tour?.colisCount || r.result?.colisCount || 0), 0)
       
-      let message = `✅ ${successResults.length} tournée(s) importée(s): ${totalColis} colis`
+      // Séparer les imports avec nouveaux colis des fusions sans nouveaux colis
+      const newImports = successResults.filter((r: any) => !r.result?.alreadyExists)
+      const fusionImports = successResults.filter((r: any) => r.result?.alreadyExists)
+      
+      const totalColis = newImports.reduce((sum, r) => sum + (r.result?.tour?.colisCount || r.result?.colisCount || 0), 0)
+      const fusionColis = fusionImports.reduce((sum, r) => sum + (r.result?.totalInFile || 0), 0)
+      
+      let message = `✅ ${newImports.length} tournée(s) importée(s): ${totalColis} colis`
+      if (fusionImports.length > 0) {
+        message += `\n\nℹ️ ${fusionImports.length} fichier(s) fusionné(s): ${fusionColis} colis déjà présents`
+      }
       if (failedResults.length > 0) {
         message += `\n\n⚠️ ${failedResults.length} erreur(s):\n` + 
           failedResults.map(r => `• ${r.file}: ${r.error}`).join('\n')
@@ -1208,6 +1304,135 @@ function AdminView() {
     importType: 'cainiao'
   })
 
+  // === FONCTIONS DE VÉRIFICATION DES PATTERNS DE TRACKING ===
+  
+  // La vérification des patterns se fait maintenant côté backend
+  // Si des patterns inconnus sont détectés, le backend retourne une erreur spécifique
+  // et le frontend affiche le modal pour les associer
+
+  // Sauvegarder les nouveaux patterns et continuer l'import
+  const saveUnknownPatternsAndContinue = async () => {
+    try {
+      // Sauvegarder chaque nouveau pattern
+      for (const [prefix, type] of Object.entries(patternAssignments)) {
+        await api.post('/api/tracking-patterns', {
+          prefix,
+          type,
+          description: `Ajouté lors de l'import - ${new Date().toLocaleDateString('fr-FR')}`
+        })
+      }
+      
+      // Récupérer l'action en attente avant de fermer le modal
+      const pendingAction = unknownPatternsModal.pendingAction
+      
+      // Fermer le modal
+      setUnknownPatternsModal({
+        show: false,
+        unknownPrefixes: [],
+        expectedType: null,
+        pendingAction: null
+      })
+      setPatternAssignments({})
+      
+      // Exécuter l'action en attente (relancer l'import)
+      if (pendingAction) {
+        pendingAction()
+      }
+    } catch (error) {
+      console.error('Erreur sauvegarde patterns:', error)
+      alert('Erreur lors de la sauvegarde des patterns')
+    }
+  }
+
+  // Forcer l'import Gofo malgré le type mismatch
+  const forceGofoImport = async () => {
+    setTypeMismatchModal(prev => ({ ...prev, show: false }))
+    
+    if (files.length === 0 || !selectedDate) return
+    
+    const results: any[] = []
+    setImportProgress({ current: 0, total: files.length, results: [] })
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      setImportProgress(prev => prev ? { ...prev, current: i + 1 } : null)
+      
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('date', selectedDate)
+        if (sousTraitant) formData.append('sousTraitantName', sousTraitant)
+        
+        const { data } = await api.post('/api/tours/import', formData, {
+          headers: { 
+            'Content-Type': 'multipart/form-data',
+            'X-Force-Import': 'true'
+          },
+        })
+        results.push({ success: true, file: file.name, result: data })
+      } catch (err: any) {
+        results.push({ 
+          success: false, 
+          file: file.name, 
+          error: err?.response?.data?.message || err?.message || 'Erreur' 
+        })
+      }
+    }
+    
+    setImportProgress(null)
+    setFiles([])
+    setSousTraitant('')
+    qc.invalidateQueries({ queryKey: ['tours'] })
+    qc.invalidateQueries({ queryKey: ['stats'] })
+    qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
+    
+    const successCount = results.filter(r => r.success).length
+    const failedCount = results.filter(r => !r.success).length
+    alert(`Import forcé terminé: ${successCount} réussi(s), ${failedCount} échec(s)`)
+  }
+
+  // Forcer l'import Cainiao malgré le type mismatch
+  const forceCaniaoImport = async () => {
+    setTypeMismatchModal(prev => ({ ...prev, show: false }))
+    
+    if (caniaoExcelFiles.length === 0 || !selectedDate) return
+    
+    const results: any[] = []
+    
+    for (const file of caniaoExcelFiles) {
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('date', selectedDate)
+        if (caniaoExcelSousTraitant) formData.append('sousTraitantName', caniaoExcelSousTraitant)
+        
+        const { data } = await api.post('/api/tours/import/caniao-excel', formData, {
+          headers: { 
+            'Content-Type': 'multipart/form-data',
+            'X-Force-Import': 'true'
+          },
+        })
+        results.push({ success: true, file: file.name, result: data })
+      } catch (err: any) {
+        results.push({ 
+          success: false, 
+          file: file.name, 
+          error: err?.response?.data?.message || err?.message || 'Erreur' 
+        })
+      }
+    }
+    
+    setCaniaoExcelFiles([])
+    setCaniaoExcelSousTraitant('')
+    qc.invalidateQueries({ queryKey: ['tours'] })
+    qc.invalidateQueries({ queryKey: ['stats'] })
+    qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
+    
+    const successCount = results.filter(r => r.success).length
+    const failedCount = results.filter(r => !r.success).length
+    alert(`Import forcé terminé: ${successCount} réussi(s), ${failedCount} échec(s)`)
+  }
+
   // Fonction pour extraire les noms de chauffeurs des fichiers à importer
   const extractDriverNamesFromFiles = (files: File[]): string[] => {
     const names: string[] = []
@@ -1226,8 +1451,8 @@ function AdminView() {
     return names
   }
 
-  // Fonction pour vérifier les doublons avant import Cainiao
-  const checkCaniaoImportDuplicates = () => {
+  // Fonction pour vérifier les doublons avant import Cainiao (appelée après vérification patterns)
+  const checkCaniaoImportDuplicatesInternal = () => {
     if (caniaoExcelFiles.length === 0 || !selectedDate) return
     
     // 1. Extraire les noms des fichiers à importer
@@ -1263,8 +1488,14 @@ function AdminView() {
     }
   }
 
-  // Fonction pour vérifier les doublons avant import Gofo
-  const checkGofoImportDuplicates = () => {
+  // Fonction wrapper qui vérifie d'abord les patterns puis les doublons
+  const checkCaniaoImportDuplicates = () => {
+    if (caniaoExcelFiles.length === 0 || !selectedDate) return
+    checkCaniaoImportDuplicatesInternal()
+  }
+
+  // Fonction pour vérifier les doublons avant import Gofo (appelée après vérification patterns)
+  const checkGofoImportDuplicatesInternal = () => {
     if (files.length === 0 || !selectedDate) return
     
     // 1. Extraire les noms des fichiers à importer
@@ -1298,6 +1529,12 @@ function AdminView() {
       // Pas de conflit, lancer l'import directement
       normalMutation.mutate()
     }
+  }
+
+  // Fonction wrapper qui vérifie d'abord les patterns puis les doublons
+  const checkGofoImportDuplicates = () => {
+    if (files.length === 0 || !selectedDate) return
+    checkGofoImportDuplicatesInternal()
   }
 
   // MUTATION UNIFIÉE CAINIAO - Gère PDF multi-chauffeurs ET Excel/PDF uni-chauffeur
@@ -1373,6 +1610,38 @@ function AdminView() {
           results.push({ success: true, file: file.name, result: data, type: 'uni' })
         } catch (err: any) {
           const errorData = err?.response?.data
+          
+          // Patterns de tracking inconnus - afficher le modal
+          if (errorData?.error === 'UNKNOWN_TRACKING_PATTERNS') {
+            setUnknownPatternsModal({
+              show: true,
+              unknownPrefixes: errorData.unknownPrefixes || [],
+              expectedType: errorData.expectedType || 'caniao',
+              pendingAction: () => caniaoUnifiedMutation.mutate()
+            })
+            // Initialiser les assignations avec le type attendu par défaut
+            const initialAssignments: Record<string, 'gofo' | 'caniao' | 'autre'> = {}
+            for (const up of (errorData.unknownPrefixes || [])) {
+              initialAssignments[up.prefix] = errorData.expectedType || 'caniao'
+            }
+            setPatternAssignments(initialAssignments)
+            return { results: [], hasUnknownPatterns: true }
+          }
+          
+          // Type mismatch - afficher le modal de confirmation
+          if (errorData?.error === 'TYPE_MISMATCH') {
+            setTypeMismatchModal({
+              show: true,
+              detectedType: errorData.detectedType || '',
+              expectedType: errorData.expectedType || 'caniao',
+              mismatchCount: errorData.mismatchCount || 0,
+              examples: errorData.examples || [],
+              totalColis: errorData.totalColis || 0,
+              pendingAction: () => forceCaniaoImport(),
+              importType: 'caniao'
+            })
+            return { results: [], hasTypeMismatch: true }
+          }
           
           // Chauffeur inconnu - collecter pour plus tard
           if (errorData?.error === 'UNKNOWN_CHAUFFEUR') {
@@ -1474,6 +1743,16 @@ function AdminView() {
       return { partial: false, results, remaining: 0 }
     },
     onSuccess: (data: any) => {
+      // Cas: patterns inconnus - le modal est déjà affiché
+      if (data.hasUnknownPatterns) {
+        return
+      }
+      
+      // Cas: type mismatch - le modal est déjà affiché
+      if (data.hasTypeMismatch) {
+        return
+      }
+      
       if (data.partial) {
         const successCount = data.results.filter((r: any) => r.success).length
         if (successCount > 0) {
@@ -1497,17 +1776,32 @@ function AdminView() {
       // Calculer les totaux
       let totalTours = 0
       let totalColis = 0
+      let alreadyExistsCount = 0
+      let alreadyExistsColis = 0
+      
       for (const r of successResults) {
         if (r.type === 'multi') {
           totalTours += r.toursCount || 0
           totalColis += r.colisCount || 0
         } else {
-          totalTours += 1
-          totalColis += r.result?.tour?.colisCount || r.result?.colisCount || 0
+          // Vérifier si c'est une fusion sans nouveaux colis
+          if (r.result?.alreadyExists) {
+            alreadyExistsCount++
+            alreadyExistsColis += r.result?.totalInFile || 0
+          } else {
+            totalTours += 1
+            totalColis += r.result?.tour?.colisCount || r.result?.colisCount || 0
+          }
         }
       }
       
       let message = `✅ ${totalTours} tournée(s) Cainiao importée(s): ${totalColis} colis`
+      
+      // Ajouter info sur les fusions sans nouveaux colis
+      if (alreadyExistsCount > 0) {
+        message += `\n\nℹ️ ${alreadyExistsCount} fichier(s) fusionné(s): ${alreadyExistsColis} colis déjà présents`
+      }
+      
       if (failedResults.length > 0) {
         message += `\n\n⚠️ ${failedResults.length} erreur(s):\n` + 
           failedResults.map((r: any) => `• ${r.file}: ${r.error}`).join('\n')
@@ -1755,9 +2049,9 @@ function AdminView() {
             <p className="card-title">🔵 Import Gofo (Excel)</p>
             <div className="input-group">
               <label>Sous-traitant (optionnel - auto-dispatch)</label>
-              <select value={sousTraitant} onChange={(e) => setSousTraitant(e.target.value)}>
-                <option value="">-- Auto-dispatch --</option>
-                {sousTraitants.map(st => <option key={st} value={st}>{st}</option>)}
+              <select value={sousTraitant} onChange={(e) => setSousTraitant(e.target.value)} style={{ background: '#1a1a2e', color: '#fff' }}>
+                <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Auto-dispatch --</option>
+                {sousTraitants.map(st => <option key={st} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>)}
               </select>
             </div>
             <div className="input-group" style={{ marginTop: 12 }} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
@@ -1793,9 +2087,9 @@ function AdminView() {
             </p>
             <div className="input-group">
               <label>Sous-traitant (optionnel)</label>
-              <select value={caniaoExcelSousTraitant} onChange={(e) => setCaniaoExcelSousTraitant(e.target.value)}>
-                <option value="">-- Auto-dispatch --</option>
-                {sousTraitants.map(st => <option key={st} value={st}>{st}</option>)}
+              <select value={caniaoExcelSousTraitant} onChange={(e) => setCaniaoExcelSousTraitant(e.target.value)} style={{ background: '#1a1a2e', color: '#fff' }}>
+                <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Auto-dispatch --</option>
+                {sousTraitants.map(st => <option key={st} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>)}
               </select>
             </div>
             <div 
@@ -1877,9 +2171,9 @@ function AdminView() {
             <p className="card-title">🔍 Filtre sous-traitant</p>
             <div className="input-group">
               <label>Sous-traitant</label>
-              <select value={toursSousTraitant} onChange={(e) => setToursSousTraitant(e.target.value)}>
-                <option value="TOUS">TOUS</option>
-                {sousTraitants.map(st => <option key={st} value={st}>{st}</option>)}
+              <select value={toursSousTraitant} onChange={(e) => setToursSousTraitant(e.target.value)} style={{ background: '#1a1a2e', color: '#fff' }}>
+                <option value="TOUS" style={{ background: '#1a1a2e', color: '#fff' }}>TOUS</option>
+                {sousTraitants.map(st => <option key={st} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>)}
               </select>
             </div>
           </div>
@@ -2076,11 +2370,11 @@ function AdminView() {
                   <select 
                     value={selectedExistingChauffeur} 
                     onChange={(e) => setSelectedExistingChauffeur(e.target.value)}
-                    style={{ width: '100%' }}
+                    style={{ width: '100%', background: '#1a1a2e', color: '#fff', padding: '8px 12px', borderRadius: 6, border: '1px solid #444' }}
                   >
-                    <option value="">-- Choisir un chauffeur existant --</option>
+                    <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Choisir un chauffeur existant --</option>
                     {unknownChauffeurModal.existingChauffeurs.map(c => (
-                      <option key={c.name} value={c.name}>
+                      <option key={c.name} value={c.name} style={{ background: '#1a1a2e', color: '#fff' }}>
                         {c.name} ({c.sousTraitant})
                       </option>
                     ))}
@@ -2115,14 +2409,14 @@ function AdminView() {
                       <select 
                         value={selectedAssociation} 
                         onChange={(e) => setSelectedAssociation(e.target.value)}
-                        style={{ width: '100%' }}
+                        style={{ width: '100%', background: '#1a1a2e', color: '#fff', padding: '8px 12px', borderRadius: 6, border: '1px solid #444' }}
                       >
-                        <option value="">-- Choisir un sous-traitant --</option>
+                        <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Choisir un sous-traitant --</option>
                         {(unknownChauffeurModal.sousTraitants.length > 0 
                           ? unknownChauffeurModal.sousTraitants 
                           : sousTraitants
                         ).map(st => (
-                          <option key={st} value={st}>{st}</option>
+                          <option key={st} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>
                         ))}
                       </select>
                     </div>
@@ -2143,7 +2437,7 @@ function AdminView() {
                         value={newSousTraitantName}
                         onChange={(e) => setNewSousTraitantName(e.target.value)}
                         placeholder="Ex: EXPRESS DELIVERY"
-                        style={{ width: '100%' }}
+                        style={{ width: '100%', background: '#1a1a2e', color: '#fff', padding: '8px 12px', borderRadius: 6, border: '1px solid #444' }}
                       />
                     </div>
                     <button 
@@ -2322,11 +2616,11 @@ function AdminView() {
                             }
                           }))
                         }}
-                        style={{ width: '100%', padding: 8, borderRadius: 6, background: '#222', border: '1px solid #444', color: '#fff' }}
+                        style={{ width: '100%', padding: 8, borderRadius: 6, background: '#1a1a2e', border: '1px solid #444', color: '#fff' }}
                       >
-                        <option value="">-- Sélectionner un chauffeur existant --</option>
+                        <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Sélectionner un chauffeur existant --</option>
                         {caniaoMultiModal.existingChauffeurs.map((c, cIdx) => (
-                          <option key={cIdx} value={c.name}>{c.name} ({c.sousTraitant})</option>
+                          <option key={cIdx} value={c.name} style={{ background: '#1a1a2e', color: '#fff' }}>{c.name} ({c.sousTraitant})</option>
                         ))}
                       </select>
                     ) : (
@@ -2347,17 +2641,17 @@ function AdminView() {
                               }))
                             }
                           }}
-                          style={{ width: '100%', padding: 8, borderRadius: 6, background: '#222', border: '1px solid #444', color: '#fff' }}
+                          style={{ width: '100%', padding: 8, borderRadius: 6, background: '#1a1a2e', border: '1px solid #444', color: '#fff' }}
                         >
-                          <option value="">-- Sélectionner un sous-traitant --</option>
+                          <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Sélectionner un sous-traitant --</option>
                           {(caniaoMultiModal.sousTraitants.length > 0 
                             ? caniaoMultiModal.sousTraitants 
                             : sousTraitants
                           ).map((st, stIdx) => (
-                            <option key={stIdx} value={st}>{st}</option>
+                            <option key={stIdx} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>
                           ))}
                           {/* Option pour créer nouveau */}
-                          <option value="__CREATE_NEW__" style={{ fontWeight: 'bold', color: '#7c3aed' }}>+ Créer un nouveau sous-traitant</option>
+                          <option value="__CREATE_NEW__" style={{ background: '#1a1a2e', color: '#10b981' }}>+ Créer un nouveau sous-traitant</option>
                         </select>
                         
                         {/* Champ pour créer un nouveau sous-traitant */}
@@ -2563,13 +2857,13 @@ function AdminView() {
                           padding: '8px 12px',
                           borderRadius: 6,
                           border: '1px solid #444',
-                          background: 'var(--surface)',
+                          background: '#1a1a2e',
                           color: '#fff'
                         }}
                       >
-                        <option value="">-- Sélectionner un chauffeur existant --</option>
+                        <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Sélectionner un chauffeur existant --</option>
                         {gofoMultiModal.existingChauffeurs.map(c => (
-                          <option key={c.name} value={c.name}>{c.name} ({c.sousTraitant})</option>
+                          <option key={c.name} value={c.name} style={{ background: '#1a1a2e', color: '#fff' }}>{c.name} ({c.sousTraitant})</option>
                         ))}
                       </select>
                     ) : (
@@ -2595,15 +2889,15 @@ function AdminView() {
                               padding: '8px 12px',
                               borderRadius: 6,
                               border: '1px solid #444',
-                              background: 'var(--surface)',
+                              background: '#1a1a2e',
                               color: '#fff'
                             }}
                           >
-                            <option value="">-- Sélectionner un sous-traitant --</option>
+                            <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Sélectionner un sous-traitant --</option>
                             {gofoMultiModal.sousTraitants.map(st => (
-                              <option key={st} value={st}>{st}</option>
+                              <option key={st} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>
                             ))}
-                            <option value="__CREATE_NEW__">+ Créer un nouveau sous-traitant</option>
+                            <option value="__CREATE_NEW__" style={{ background: '#1a1a2e', color: '#10b981' }}>+ Créer un nouveau sous-traitant</option>
                           </select>
                         ) : (
                           <div style={{ display: 'flex', gap: 8 }}>
@@ -2620,7 +2914,7 @@ function AdminView() {
                                 padding: '8px 12px',
                                 borderRadius: 6,
                                 border: '2px solid #7c3aed',
-                                background: 'var(--surface)',
+                                background: '#1a1a2e',
                                 color: '#fff'
                               }}
                             />
@@ -2682,6 +2976,254 @@ function AdminView() {
                 })}
               >
                 ✓ Confirmer et importer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de patterns de tracking inconnus */}
+      {unknownPatternsModal.show && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'var(--surface)',
+            borderRadius: 12,
+            padding: 24,
+            width: '90%',
+            maxWidth: 550,
+            boxShadow: '0 10px 40px rgba(0,0,0,0.5)'
+          }}>
+            <h3 style={{ margin: '0 0 16px 0', color: '#8b5cf6' }}>
+              🔍 Nouveaux préfixes de tracking détectés
+            </h3>
+            
+            <p style={{ margin: '0 0 16px 0', color: '#888', fontSize: 14 }}>
+              Des numéros de tracking avec des préfixes inconnus ont été détectés. 
+              Indiquez à quel type ils appartiennent pour qu'ils soient reconnus automatiquement à l'avenir.
+            </p>
+            
+            <div style={{ 
+              background: 'var(--panel)', 
+              borderRadius: 8, 
+              padding: 16,
+              marginBottom: 16,
+              maxHeight: 300,
+              overflow: 'auto'
+            }}>
+              {unknownPatternsModal.unknownPrefixes.map((up, idx) => (
+                <div key={idx} style={{ 
+                  marginBottom: idx < unknownPatternsModal.unknownPrefixes.length - 1 ? 16 : 0,
+                  padding: 12,
+                  background: 'var(--surface)',
+                  borderRadius: 8
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div>
+                      <span style={{ 
+                        fontWeight: 'bold', 
+                        fontSize: 16,
+                        fontFamily: 'monospace',
+                        background: '#8b5cf6',
+                        color: '#fff',
+                        padding: '4px 8px',
+                        borderRadius: 4
+                      }}>
+                        {up.prefix}...
+                      </span>
+                      <span style={{ marginLeft: 8, color: '#888', fontSize: 13 }}>
+                        ({up.count} colis)
+                      </span>
+                    </div>
+                    <select
+                      value={patternAssignments[up.prefix] || unknownPatternsModal.expectedType || 'caniao'}
+                      onChange={(e) => setPatternAssignments(prev => ({
+                        ...prev,
+                        [up.prefix]: e.target.value as 'gofo' | 'caniao' | 'autre'
+                      }))}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: 6,
+                        border: '1px solid #444',
+                        background: '#1a1a2e',
+                        color: '#fff',
+                        fontSize: 14
+                      }}
+                    >
+                      <option value="gofo" style={{ background: '#1a1a2e', color: '#fff' }}>🔵 Gofo</option>
+                      <option value="caniao" style={{ background: '#1a1a2e', color: '#fff' }}>🟣 Cainiao</option>
+                      <option value="autre" style={{ background: '#1a1a2e', color: '#fff' }}>⚪ Autre</option>
+                    </select>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#666', fontFamily: 'monospace' }}>
+                    Ex: {up.examples.slice(0, 2).map(e => e.substring(0, 20) + '...').join(', ')}
+                  </div>
+                </div>
+              ))}
+            </div>
+            
+            <div style={{ 
+              display: 'flex', 
+              gap: 12, 
+              justifyContent: 'flex-end',
+              paddingTop: 8,
+              borderTop: '1px solid var(--border)'
+            }}>
+              <button
+                onClick={() => {
+                  setUnknownPatternsModal({
+                    show: false,
+                    unknownPrefixes: [],
+                    expectedType: null,
+                    pendingAction: null
+                  })
+                  setPatternAssignments({})
+                }}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: 8,
+                  border: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  cursor: 'pointer'
+                }}
+              >
+                ❌ Annuler
+              </button>
+              <button
+                onClick={saveUnknownPatternsAndContinue}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: '#8b5cf6',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  fontWeight: 'bold'
+                }}
+              >
+                ✅ Enregistrer et continuer l'import
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de confirmation de type mismatch */}
+      {typeMismatchModal.show && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'var(--surface)',
+            borderRadius: 12,
+            padding: 24,
+            width: '90%',
+            maxWidth: 500,
+            boxShadow: '0 10px 40px rgba(0,0,0,0.5)'
+          }}>
+            <h3 style={{ margin: '0 0 16px 0', color: '#ef4444' }}>
+              ⚠️ Mauvais type de fichier détecté
+            </h3>
+            
+            <div style={{ 
+              background: '#ef4444', 
+              color: '#fff',
+              padding: 16, 
+              borderRadius: 8, 
+              marginBottom: 16 
+            }}>
+              <p style={{ margin: 0, fontWeight: 'bold', fontSize: 16 }}>
+                Ces colis semblent être de type {typeMismatchModal.detectedType.toUpperCase()} 
+                {' '}et non {typeMismatchModal.expectedType.toUpperCase()}
+              </p>
+            </div>
+            
+            <p style={{ margin: '0 0 12px 0', color: '#888' }}>
+              Sur {typeMismatchModal.totalColis} colis analysés, {typeMismatchModal.mismatchCount} ont un préfixe 
+              de type <strong>{typeMismatchModal.detectedType}</strong>.
+            </p>
+            
+            {typeMismatchModal.examples.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <p style={{ margin: '0 0 8px 0', fontSize: 13, color: '#888' }}>Exemples de trackings :</p>
+                <div style={{ 
+                  background: 'var(--panel)', 
+                  borderRadius: 8, 
+                  padding: 12,
+                  fontFamily: 'monospace',
+                  fontSize: 12
+                }}>
+                  {typeMismatchModal.examples.map((ex, idx) => (
+                    <div key={idx} style={{ marginBottom: 4 }}>{ex}...</div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            <p style={{ margin: '0 0 16px 0', fontSize: 14, color: '#f59e0b' }}>
+              💡 Utilisez le formulaire <strong>"{typeMismatchModal.detectedType === 'gofo' ? 'Import Gofo' : 'Import Cainiao'}"</strong> à la place.
+            </p>
+            
+            <div style={{ 
+              display: 'flex', 
+              gap: 12, 
+              justifyContent: 'flex-end',
+              paddingTop: 8,
+              borderTop: '1px solid var(--border)'
+            }}>
+              <button
+                onClick={() => {
+                  setTypeMismatchModal(prev => ({ ...prev, show: false }))
+                  // Vider les fichiers
+                  if (typeMismatchModal.importType === 'gofo') {
+                    setFiles([])
+                  } else {
+                    setCaniaoExcelFiles([])
+                  }
+                }}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: '#10b981',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  fontWeight: 'bold'
+                }}
+              >
+                ✓ OK, annuler l'import
+              </button>
+              <button
+                onClick={() => {
+                  if (typeMismatchModal.pendingAction) {
+                    typeMismatchModal.pendingAction()
+                  }
+                }}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: 8,
+                  border: '1px solid #ef4444',
+                  background: 'transparent',
+                  color: '#ef4444',
+                  cursor: 'pointer',
+                  fontSize: 12
+                }}
+              >
+                Forcer l'import quand même
               </button>
             </div>
           </div>
