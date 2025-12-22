@@ -732,7 +732,7 @@ function AdminView() {
         } catch (err: any) {
           const errorData = err?.response?.data
           
-          // Patterns de tracking inconnus - afficher le modal
+          // Patterns de tracking inconnus - afficher le modal (arrête l'import pour apprendre le pattern)
           if (errorData?.error === 'UNKNOWN_TRACKING_PATTERNS') {
             setUnknownPatternsModal({
               show: true,
@@ -749,19 +749,17 @@ function AdminView() {
             return { results: [], hasUnknownPatterns: true }
           }
           
-          // Type mismatch - afficher le modal de confirmation
+          // Type mismatch - NE PAS ARRÊTER, juste ajouter aux erreurs et continuer
           if (errorData?.error === 'TYPE_MISMATCH') {
-            setTypeMismatchModal({
-              show: true,
-              detectedType: errorData.detectedType || '',
-              expectedType: errorData.expectedType || 'gofo',
-              mismatchCount: errorData.mismatchCount || 0,
-              examples: errorData.examples || [],
-              totalColis: errorData.totalColis || 0,
-              pendingAction: () => forceGofoImport(),
-              importType: 'gofo'
+            results.push({ 
+              success: false, 
+              file: file.name, 
+              error: `⚠️ Fichier ${errorData.detectedType?.toUpperCase() || 'inconnu'} détecté (pas Gofo)`,
+              isTypeMismatch: true,
+              detectedType: errorData.detectedType
             })
-            return { results: [], hasTypeMismatch: true }
+            // Continuer avec les autres fichiers
+            continue
           }
           
           results.push({ 
@@ -779,11 +777,6 @@ function AdminView() {
       
       // Cas: patterns inconnus - le modal est déjà affiché
       if (data.hasUnknownPatterns) {
-        return
-      }
-      
-      // Cas: type mismatch - le modal est déjà affiché
-      if (data.hasTypeMismatch) {
         return
       }
       
@@ -813,6 +806,10 @@ function AdminView() {
       const successResults = data.results.filter((r: any) => r.success)
       const failedResults = data.results.filter((r: any) => !r.success)
       
+      // Séparer les erreurs de type mismatch des autres erreurs
+      const typeMismatchResults = failedResults.filter((r: any) => r.isTypeMismatch)
+      const otherErrors = failedResults.filter((r: any) => !r.isTypeMismatch)
+      
       // Séparer les imports avec nouveaux colis des fusions sans nouveaux colis
       const newImports = successResults.filter((r: any) => !r.result?.alreadyExists)
       const fusionImports = successResults.filter((r: any) => r.result?.alreadyExists)
@@ -823,16 +820,20 @@ function AdminView() {
       )
       const fusionColis = fusionImports.reduce((sum: number, r: any) => sum + (r.result?.totalInFile || 0), 0)
       
-      let message = `${newImports.length} tournée(s) importée(s): ${totalColis} colis`
+      let message = `✅ ${newImports.length} tournée(s) importée(s): ${totalColis} colis`
       if (totalDuplicates > 0) {
         message += ` (${totalDuplicates} doublons ignorés)`
       }
       if (fusionImports.length > 0) {
         message += `\n\nℹ️ ${fusionImports.length} fichier(s) fusionné(s): ${fusionColis} colis déjà présents`
       }
-      if (failedResults.length > 0) {
-        message += `\n\n⚠️ ${failedResults.length} erreur(s):\n` + 
-          failedResults.map((r: any) => `• ${r.file}: ${r.error}`).join('\n')
+      if (typeMismatchResults.length > 0) {
+        message += `\n\n🚫 ${typeMismatchResults.length} fichier(s) ignoré(s) (mauvais type):\n` + 
+          typeMismatchResults.map((r: any) => `• ${r.file} → ${r.detectedType?.toUpperCase() || 'inconnu'} (utilisez l'import ${r.detectedType?.toUpperCase() || 'approprié'})`).join('\n')
+      }
+      if (otherErrors.length > 0) {
+        message += `\n\n⚠️ ${otherErrors.length} erreur(s):\n` + 
+          otherErrors.map((r: any) => `• ${r.file}: ${r.error}`).join('\n')
       }
       alert(message)
     },
@@ -1582,7 +1583,36 @@ function AdminView() {
           // Si NO_PLAGES, basculer ce PDF vers uni-chauffeur
           else if (errorData?.error === 'NO_PLAGES' || errorData?.message?.includes('plage')) {
             uniChauffeurFiles.push(file)
-          } else {
+          }
+          // Type mismatch - NE PAS ARRÊTER, juste ajouter aux erreurs et continuer
+          else if (errorData?.error === 'TYPE_MISMATCH') {
+            results.push({ 
+              success: false, 
+              file: file.name, 
+              error: `⚠️ Fichier ${errorData.detectedType?.toUpperCase() || 'inconnu'} détecté (pas Cainiao)`,
+              type: 'multi',
+              isTypeMismatch: true,
+              detectedType: errorData.detectedType
+            })
+            // Continuer avec les autres fichiers
+            continue
+          }
+          // Patterns inconnus - on doit arrêter pour apprendre le pattern
+          else if (errorData?.error === 'UNKNOWN_TRACKING_PATTERNS') {
+            setUnknownPatternsModal({
+              show: true,
+              unknownPrefixes: errorData.unknownPrefixes || [],
+              expectedType: errorData.expectedType || 'caniao',
+              pendingAction: () => caniaoUnifiedMutation.mutate()
+            })
+            const initialAssignments: Record<string, 'gofo' | 'caniao' | 'autre'> = {}
+            for (const up of (errorData.unknownPrefixes || [])) {
+              initialAssignments[up.prefix] = errorData.expectedType || 'caniao'
+            }
+            setPatternAssignments(initialAssignments)
+            return { results: [], hasUnknownPatterns: true }
+          }
+          else {
             results.push({ 
               success: false, 
               file: file.name, 
@@ -1611,7 +1641,7 @@ function AdminView() {
         } catch (err: any) {
           const errorData = err?.response?.data
           
-          // Patterns de tracking inconnus - afficher le modal
+          // Patterns de tracking inconnus - afficher le modal (arrête l'import pour apprendre le pattern)
           if (errorData?.error === 'UNKNOWN_TRACKING_PATTERNS') {
             setUnknownPatternsModal({
               show: true,
@@ -1628,19 +1658,18 @@ function AdminView() {
             return { results: [], hasUnknownPatterns: true }
           }
           
-          // Type mismatch - afficher le modal de confirmation
+          // Type mismatch - NE PAS ARRÊTER, juste ajouter aux erreurs et continuer
           if (errorData?.error === 'TYPE_MISMATCH') {
-            setTypeMismatchModal({
-              show: true,
-              detectedType: errorData.detectedType || '',
-              expectedType: errorData.expectedType || 'caniao',
-              mismatchCount: errorData.mismatchCount || 0,
-              examples: errorData.examples || [],
-              totalColis: errorData.totalColis || 0,
-              pendingAction: () => forceCaniaoImport(),
-              importType: 'caniao'
+            results.push({ 
+              success: false, 
+              file: file.name, 
+              error: `⚠️ Fichier ${errorData.detectedType?.toUpperCase() || 'inconnu'} détecté (pas Cainiao)`,
+              type: 'uni',
+              isTypeMismatch: true,
+              detectedType: errorData.detectedType
             })
-            return { results: [], hasTypeMismatch: true }
+            // Continuer avec les autres fichiers
+            continue
           }
           
           // Chauffeur inconnu - collecter pour plus tard
@@ -1748,11 +1777,6 @@ function AdminView() {
         return
       }
       
-      // Cas: type mismatch - le modal est déjà affiché
-      if (data.hasTypeMismatch) {
-        return
-      }
-      
       if (data.partial) {
         const successCount = data.results.filter((r: any) => r.success).length
         if (successCount > 0) {
@@ -1772,6 +1796,10 @@ function AdminView() {
       
       const successResults = data.results.filter((r: any) => r.success)
       const failedResults = data.results.filter((r: any) => !r.success)
+      
+      // Séparer les erreurs de type mismatch des autres erreurs
+      const typeMismatchResults = failedResults.filter((r: any) => r.isTypeMismatch)
+      const otherErrors = failedResults.filter((r: any) => !r.isTypeMismatch)
       
       // Calculer les totaux
       let totalTours = 0
@@ -1802,9 +1830,14 @@ function AdminView() {
         message += `\n\nℹ️ ${alreadyExistsCount} fichier(s) fusionné(s): ${alreadyExistsColis} colis déjà présents`
       }
       
-      if (failedResults.length > 0) {
-        message += `\n\n⚠️ ${failedResults.length} erreur(s):\n` + 
-          failedResults.map((r: any) => `• ${r.file}: ${r.error}`).join('\n')
+      if (typeMismatchResults.length > 0) {
+        message += `\n\n🚫 ${typeMismatchResults.length} fichier(s) ignoré(s) (mauvais type):\n` + 
+          typeMismatchResults.map((r: any) => `• ${r.file} → ${r.detectedType?.toUpperCase() || 'inconnu'} (utilisez l'import ${r.detectedType?.toUpperCase() || 'approprié'})`).join('\n')
+      }
+      
+      if (otherErrors.length > 0) {
+        message += `\n\n⚠️ ${otherErrors.length} erreur(s):\n` + 
+          otherErrors.map((r: any) => `• ${r.file}: ${r.error}`).join('\n')
       }
       alert(message)
     },

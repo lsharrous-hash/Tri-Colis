@@ -1812,6 +1812,62 @@ app.post(
 
       log('INFO', 'Colis CANIAO extraits', { totalColis: allColis.length });
 
+      // Vérifier les patterns de tracking inconnus
+      const trackingsListPDF = allColis.map(c => c.trackingNumber).filter(t => t);
+      const patternsCheckPDF = checkTrackingsForUnknownPatterns(trackingsListPDF);
+      
+      if (patternsCheckPDF.hasUnknown) {
+        fs.unlinkSync(uploaded.path);
+        return res.status(400).json({
+          error: "UNKNOWN_TRACKING_PATTERNS",
+          message: "Des préfixes de tracking inconnus ont été détectés",
+          unknownPrefixes: patternsCheckPDF.unknownPrefixes,
+          expectedType: 'caniao',
+          totalColis: allColis.length
+        });
+      }
+
+      // Vérifier si les trackings correspondent bien à Cainiao (pas à Gofo)
+      const typeMismatchPDF = [];
+      for (const tracking of trackingsListPDF.slice(0, 30)) {
+        const detected = detectTrackingType(tracking);
+        if (detected.type !== 'unknown' && detected.type !== 'caniao') {
+          typeMismatchPDF.push({
+            tracking,
+            detectedType: detected.type,
+            prefix: detected.prefix
+          });
+        }
+      }
+      
+      // Si plus de 3 trackings sont d'un autre type, bloquer l'import
+      if (typeMismatchPDF.length >= 3) {
+        const detectedType = typeMismatchPDF[0].detectedType;
+        const mismatchCount = typeMismatchPDF.length;
+        
+        // Vérifier si l'utilisateur a forcé l'import (header spécial)
+        const forceImport = req.headers['x-force-import'] === 'true';
+        
+        if (!forceImport) {
+          fs.unlinkSync(uploaded.path);
+          return res.status(400).json({
+            error: "TYPE_MISMATCH",
+            message: `Ces colis semblent être de type ${detectedType.toUpperCase()} et non Cainiao`,
+            detectedType: detectedType,
+            expectedType: 'caniao',
+            mismatchCount: mismatchCount,
+            examples: typeMismatchPDF.slice(0, 5).map(m => m.tracking.substring(0, 20)),
+            totalColis: allColis.length
+          });
+        }
+        
+        log('WARN', 'Import Cainiao PDF forcé malgré type mismatch', { 
+          mismatchCount, 
+          detectedType,
+          examples: typeMismatchPDF.slice(0, 3) 
+        });
+      }
+
       // Extraire les plages de chauffeurs depuis les numéros d'ordre
       // Les colis sont déjà parsés avec orderNumber, on doit détecter les plages
       const dataBuffer = fs.readFileSync(uploaded.path);
