@@ -14,7 +14,12 @@
       "prefix": "GFFR",
       "type": "gofo",
       "description": "Gofo - Préfixe GF"
+    },
+    {
+      "prefix": "CIFR",
+      "type": "caniao",
+      "description": "Ajouté lors de l'import - 22/12/2025"
     }
   ],
-  "lastUpdated": "2025-12-21T00:05:35.915Z"
+  "lastUpdated": "2025-12-22T00:30:55.362Z"
 }
