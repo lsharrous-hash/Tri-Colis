@@ -3781,6 +3781,229 @@ app.get("/api/tracking-patterns/detect/:tracking", authMiddleware(["ADMIN", "DIS
   res.json(result);
 });
 
+// =====================================================
+// DÉTECTION AUTOMATIQUE DU TYPE DE FICHIER
+// =====================================================
+// Analyse un fichier et retourne le type détecté (gofo/caniao) sans l'importer
+app.post("/api/file/detect-type", authMiddleware(["ADMIN", "DISPATCHER"]), upload.single("file"), async (req, res) => {
+  try {
+    const uploaded = req.file;
+    
+    log('INFO', '=== DÉTECTION TYPE FICHIER ===', { 
+      hasFile: !!uploaded, 
+      filename: uploaded?.originalname 
+    });
+    
+    if (!uploaded) {
+      return res.status(400).json({ error: "NO_FILE", message: "Aucun fichier fourni" });
+    }
+    
+    const filename = uploaded.originalname.toLowerCase();
+    const isPDF = filename.endsWith('.pdf');
+    const isExcel = filename.endsWith('.xlsx') || filename.endsWith('.xls');
+    
+    if (!isPDF && !isExcel) {
+      fs.unlinkSync(uploaded.path);
+      return res.status(400).json({ 
+        error: "INVALID_FORMAT", 
+        message: "Format non supporté. Utilisez PDF ou Excel." 
+      });
+    }
+    
+    let trackings = [];
+    let isMultiChauffeur = false;
+    let chauffeurName = null;
+    
+    try {
+      if (isPDF) {
+        // Parser le PDF pour extraire les trackings
+        const colis = await parsePDFWithPython(uploaded.path);
+        trackings = colis.map(c => c.trackingNumber).filter(t => t);
+        
+        // Vérifier si c'est un PDF multi-chauffeurs (présence de plages)
+        const dataBuffer = fs.readFileSync(uploaded.path);
+        const pdfParse = require("pdf-parse");
+        const pdfData = await pdfParse(dataBuffer);
+        const text = pdfData.text.replace(/\s+/g, ' ').trim();
+        
+        // Chercher des patterns de plages
+        const plageRegex = /\(([a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ\-_']*)\s*(\d+)\s*-\s*(\d+)\)/gi;
+        const matches = text.match(plageRegex);
+        isMultiChauffeur = matches && matches.length > 0;
+        
+      } else {
+        // Parser l'Excel - utiliser la même logique que l'import normal
+        const XLSX = require('xlsx');
+        const workbook = XLSX.readFile(uploaded.path);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        
+        if (jsonData.length < 2) {
+          fs.unlinkSync(uploaded.path);
+          return res.json({
+            type: 'unknown',
+            confidence: 0,
+            message: "Fichier Excel vide",
+            filename: uploaded.originalname
+          });
+        }
+        
+        // Chercher la colonne tracking avec la même logique que l'import
+        const headers = (jsonData[0] || []).map(h => String(h || '').toLowerCase().trim());
+        log('DEBUG', 'Détection - Headers Excel', { headers, filename: uploaded.originalname });
+        
+        let trackingColIndex = headers.findIndex(h => 
+          h.includes('tracking') || h.includes('numero') || h.includes('numéro') || 
+          h.includes('colis') || h.includes('waybill') || h.includes('code')
+        );
+        
+        // Si pas trouvé par header, chercher la colonne avec des codes tracking
+        if (trackingColIndex === -1) {
+          for (let col = 0; col < Math.min((jsonData[1] || []).length, 15); col++) {
+            const value = String((jsonData[1] || [])[col] || '').trim().toUpperCase();
+            // Pattern plus large pour détecter les trackings
+            if (/^[A-Z]{2,4}[A-Z]{2}\d{5,}/.test(value) || /^[A-Z]{4}\d{10,}/.test(value)) {
+              trackingColIndex = col;
+              log('DEBUG', 'Colonne tracking trouvée par pattern', { col, value });
+              break;
+            }
+          }
+        }
+        
+        log('DEBUG', 'Colonne tracking détectée', { trackingColIndex, filename: uploaded.originalname });
+        
+        // Extraire les trackings
+        for (let i = 1; i < jsonData.length && trackings.length < 50; i++) {
+          const row = jsonData[i] || [];
+          
+          if (trackingColIndex >= 0 && row[trackingColIndex]) {
+            const value = String(row[trackingColIndex]).trim().toUpperCase();
+            if (value.length > 5) {
+              trackings.push(value);
+            }
+          } else {
+            // Chercher dans toute la ligne
+            for (const cell of row) {
+              const value = String(cell || '').trim().toUpperCase();
+              if (value.length > 10 && /^[A-Z]{2,4}/.test(value)) {
+                trackings.push(value);
+                break;
+              }
+            }
+          }
+        }
+        
+        log('DEBUG', 'Trackings extraits pour détection', { 
+          count: trackings.length, 
+          samples: trackings.slice(0, 3),
+          filename: uploaded.originalname 
+        });
+        
+        // Extraire le nom du chauffeur du nom de fichier
+        const filenameWithoutExt = uploaded.originalname.replace(/\.(xlsx|xls|pdf)$/i, '');
+        const nameMatch = filenameWithoutExt.match(/^([a-zA-ZÀ-ÿ\-_']+)/i);
+        if (nameMatch) {
+          chauffeurName = nameMatch[1].replace(/[_-]/g, ' ').trim();
+          chauffeurName = chauffeurName.charAt(0).toUpperCase() + chauffeurName.slice(1).toLowerCase();
+        }
+      }
+    } catch (parseError) {
+      log('ERROR', 'Erreur parsing fichier pour détection', { error: parseError.message });
+    }
+    
+    // Nettoyer le fichier temporaire
+    fs.unlinkSync(uploaded.path);
+    
+    if (trackings.length === 0) {
+      return res.json({
+        type: 'unknown',
+        confidence: 0,
+        message: "Impossible d'extraire les numéros de tracking",
+        filename: uploaded.originalname,
+        isMultiChauffeur,
+        chauffeurName
+      });
+    }
+    
+    // Analyser les trackings pour déterminer le type
+    let gofoCount = 0;
+    let caniaoCount = 0;
+    let unknownCount = 0;
+    const unknownPrefixes = new Set();
+    
+    log('DEBUG', 'Analyse des trackings pour détection de type', { 
+      trackingsCount: trackings.length, 
+      samples: trackings.slice(0, 5),
+      patterns: TRACKING_PATTERNS.prefixes.map(p => `${p.prefix}→${p.type}`)
+    });
+    
+    for (const tracking of trackings) {
+      const detected = detectTrackingType(tracking);
+      if (detected.type === 'gofo') {
+        gofoCount++;
+      } else if (detected.type === 'caniao') {
+        caniaoCount++;
+      } else {
+        unknownCount++;
+        if (detected.prefix) {
+          unknownPrefixes.add(detected.prefix);
+        }
+      }
+    }
+    
+    log('INFO', 'Résultat détection type fichier', { 
+      filename: uploaded.originalname,
+      gofoCount, 
+      caniaoCount, 
+      unknownCount,
+      unknownPrefixes: Array.from(unknownPrefixes)
+    });
+    
+    // Déterminer le type majoritaire
+    let detectedType = 'unknown';
+    let confidence = 0;
+    
+    const total = gofoCount + caniaoCount + unknownCount;
+    
+    if (gofoCount > caniaoCount && gofoCount > unknownCount) {
+      detectedType = 'gofo';
+      confidence = Math.round((gofoCount / total) * 100);
+    } else if (caniaoCount > gofoCount && caniaoCount > unknownCount) {
+      detectedType = 'caniao';
+      confidence = Math.round((caniaoCount / total) * 100);
+    } else if (unknownCount > 0) {
+      detectedType = 'unknown';
+      confidence = 0;
+    }
+    
+    res.json({
+      type: detectedType,
+      confidence,
+      stats: {
+        gofo: gofoCount,
+        caniao: caniaoCount,
+        unknown: unknownCount,
+        total
+      },
+      unknownPrefixes: Array.from(unknownPrefixes),
+      filename: uploaded.originalname,
+      isPDF,
+      isExcel,
+      isMultiChauffeur,
+      chauffeurName,
+      sampleTrackings: trackings.slice(0, 3)
+    });
+    
+  } catch (err) {
+    log('ERROR', 'Erreur détection type fichier', { error: err.message });
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: "DETECTION_ERROR", message: err.message });
+  }
+});
+
 // API pour rafraîchir les sous-traitants des tournées existantes
 // Parcourt toutes les tournées et met à jour le sousTraitantName basé sur chauffeurs.json
 app.post("/api/tours/refresh-sous-traitants", requireAdmin, (req, res) => {

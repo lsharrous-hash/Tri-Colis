@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { uploadTour, uploadTourCaniao, getSousTraitants, getTours, deleteTour, downloadTour, api } from '../lib/api'
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 
 // =====================
@@ -16,6 +16,15 @@ interface MutualizedDriver {
   isOptimized?: boolean
   isDispatcherImport?: boolean
   gofoCreatedBy?: string | null
+}
+
+interface UnifiedFile {
+  file: File
+  detectedType: 'gofo' | 'caniao' | 'unknown' | 'detecting'
+  confidence: number
+  isMultiChauffeur?: boolean
+  chauffeurName?: string
+  manualOverride?: boolean
 }
 
 // =====================
@@ -643,6 +652,83 @@ function AdminView() {
   })
   const [patternAssignments, setPatternAssignments] = useState<Record<string, 'gofo' | 'caniao' | 'autre'>>({})
 
+  // === État pour le FORMULAIRE UNIFIÉ avec détection automatique ===
+  const [unifiedFiles, setUnifiedFiles] = useState<UnifiedFile[]>([])
+  const [isUnifiedDragging, setIsUnifiedDragging] = useState(false)
+  const [unifiedSousTraitant, setUnifiedSousTraitant] = useState<string>('')
+  const [isDetecting, setIsDetecting] = useState(false)
+
+  // Fonction pour détecter le type d'un fichier via l'API
+  const detectFileType = async (file: File): Promise<Partial<UnifiedFile>> => {
+    try {
+      console.log('🔍 Détection type pour:', file.name)
+      const formData = new FormData()
+      formData.append('file', file)
+      const { data } = await api.post('/api/file/detect-type', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      console.log('✅ Résultat détection:', file.name, data)
+      return {
+        detectedType: data.type || 'unknown',
+        confidence: data.confidence || 0,
+        isMultiChauffeur: data.isMultiChauffeur || false,
+        chauffeurName: data.chauffeurName || null
+      }
+    } catch (err: any) {
+      console.error('❌ Erreur détection type:', file.name, err?.response?.data || err?.message)
+      return { detectedType: 'unknown', confidence: 0 }
+    }
+  }
+
+  // Ajouter des fichiers et détecter leur type automatiquement
+  const addUnifiedFiles = async (newFiles: File[]) => {
+    setIsDetecting(true)
+    
+    // Créer un tableau avec les résultats de détection
+    const detectedFiles: UnifiedFile[] = []
+    
+    for (const file of newFiles) {
+      console.log('🔄 Traitement fichier:', file.name)
+      
+      // Détecter le type
+      const detection = await detectFileType(file)
+      
+      detectedFiles.push({
+        file,
+        detectedType: detection.detectedType || 'unknown',
+        confidence: detection.confidence || 0,
+        isMultiChauffeur: detection.isMultiChauffeur,
+        chauffeurName: detection.chauffeurName
+      })
+    }
+    
+    // Ajouter tous les fichiers détectés en une seule fois
+    setUnifiedFiles(prev => [...prev, ...detectedFiles])
+    setIsDetecting(false)
+    
+    console.log('✅ Tous les fichiers traités:', detectedFiles.map(f => `${f.file.name} → ${f.detectedType}`))
+  }
+
+  // Supprimer un fichier unifié
+  const removeUnifiedFile = (index: number) => {
+    setUnifiedFiles(prev => prev.filter((_, i) => i !== index))
+  }
+
+  // Changer manuellement le type d'un fichier
+  const setFileType = (index: number, type: 'gofo' | 'caniao') => {
+    setUnifiedFiles(prev => {
+      const updated = [...prev]
+      if (updated[index]) {
+        updated[index] = {
+          ...updated[index],
+          detectedType: type,
+          manualOverride: true
+        }
+      }
+      return updated
+    })
+  }
+
   // === État pour le modal de confirmation type mismatch ===
   const [typeMismatchModal, setTypeMismatchModal] = useState<{
     show: boolean
@@ -663,6 +749,9 @@ function AdminView() {
     pendingAction: null,
     importType: 'gofo'
   })
+
+  // Ref pour permettre aux handlers d'appeler l'import unifié (défini plus tard)
+  const retryUnifiedImportRef = useRef<(() => void) | null>(null)
 
   // Sous-traitants
   const { data: sousTraitantsData, refetch: refetchSousTraitants } = useQuery({ queryKey: ['sous-traitants'], queryFn: getSousTraitants })
@@ -942,14 +1031,26 @@ function AdminView() {
           qc.invalidateQueries({ queryKey: ['stats'] })
           qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
           
-          // S'il reste des fichiers, relancer l'import
+          // Retirer le fichier traité de unifiedFiles aussi
+          const remainingUnified = unifiedFiles.filter(f => f.file.name !== unknownChauffeurModal.filename)
+          setUnifiedFiles(remainingUnified)
+          
+          const linkedMsg = associationType === 'existing' 
+            ? ` (lié à ${selectedExistingChauffeur})`
+            : ''
+          
+          // S'il reste des fichiers caniaoExcel, continuer avec caniaoExcelMutation
           if (caniaoExcelFiles.length > 1) {
+            alert(`✅ Tournée Cainiao importée pour ${unknownChauffeurModal.chauffeur}${linkedMsg} → ${finalST}\n\n⏳ Traitement des fichiers suivants...`)
             setTimeout(() => caniaoExcelMutation.mutate(), 100)
+          } 
+          // Sinon, s'il reste des fichiers unifiés, relancer l'import unifié
+          else if (remainingUnified.length > 0) {
+            setCaniaoExcelFiles([])
+            alert(`✅ Tournée Cainiao importée pour ${unknownChauffeurModal.chauffeur}${linkedMsg} → ${finalST}\n\n⏳ Import des ${remainingUnified.length} fichier(s) restant(s)...`)
+            setTimeout(() => retryUnifiedImportRef.current?.(), 100)
           } else {
             setCaniaoExcelFiles([])
-            const linkedMsg = associationType === 'existing' 
-              ? ` (lié à ${selectedExistingChauffeur})`
-              : ''
             alert(`✅ Tournée Cainiao importée pour ${unknownChauffeurModal.chauffeur}${linkedMsg} → ${finalST}`)
           }
         } else {
@@ -961,14 +1062,26 @@ function AdminView() {
           qc.invalidateQueries({ queryKey: ['stats'] })
           qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
           
+          // Retirer le fichier traité de unifiedFiles aussi
+          const remainingUnified = unifiedFiles.filter(f => f.file.name !== unknownChauffeurModal.filename)
+          setUnifiedFiles(remainingUnified)
+          
+          const linkedMsg = associationType === 'existing' 
+            ? ` (lié à ${selectedExistingChauffeur})`
+            : ''
+          
           // S'il reste des fichiers, relancer l'import
           if (files.length > 1) {
+            alert(`✅ Tournée importée pour ${unknownChauffeurModal.chauffeur}${linkedMsg} → ${finalST}\n\n⏳ Traitement des fichiers suivants...`)
             setTimeout(() => normalMutation.mutate(), 100)
+          }
+          // Sinon, s'il reste des fichiers unifiés, relancer l'import unifié
+          else if (remainingUnified.length > 0) {
+            setFiles([])
+            alert(`✅ Tournée importée pour ${unknownChauffeurModal.chauffeur}${linkedMsg} → ${finalST}\n\n⏳ Import des ${remainingUnified.length} fichier(s) restant(s)...`)
+            setTimeout(() => retryUnifiedImportRef.current?.(), 100)
           } else {
             setFiles([])
-            const linkedMsg = associationType === 'existing' 
-              ? ` (lié à ${selectedExistingChauffeur})`
-              : ''
             alert(`✅ Tournée importée pour ${unknownChauffeurModal.chauffeur}${linkedMsg} → ${finalST}`)
           }
         }
@@ -1096,18 +1209,35 @@ function AdminView() {
         }
       }
       
-      // Vider les fichiers après traitement
+      // Vider les fichiers Cainiao PDF traités, garder les autres
       setCaniaoExcelFiles([])
       setCaniaoFile(null)
+      
+      // Garder les fichiers Cainiao uni-chauffeur (Excel) et autres non traités
+      const remainingFiles = unifiedFiles.filter(f => 
+        // Garder les fichiers qui ne sont pas des PDF Cainiao déjà traités
+        !(f.detectedType === 'caniao' && f.file.name.toLowerCase().endsWith('.pdf'))
+      )
+      setUnifiedFiles(remainingFiles)
       
       qc.invalidateQueries({ queryKey: ['tours'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
       qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
       
+      let message = ''
       if (errors.length > 0) {
-        alert(`✅ Import partiel: ${totalTours} tournée(s), ${totalColis} colis\n\n⚠️ Erreurs:\n${errors.join('\n')}`)
+        message = `✅ Import partiel: ${totalTours} tournée(s), ${totalColis} colis\n\n⚠️ Erreurs:\n${errors.join('\n')}`
       } else {
-        alert(`✅ Import CANIAO réussi: ${totalTours} tournée(s), ${totalColis} colis`)
+        message = `✅ Import CANIAO PDF réussi: ${totalTours} tournée(s), ${totalColis} colis`
+      }
+      
+      // Si des fichiers restent (Excel Cainiao, Gofo, etc.), continuer l'import
+      if (remainingFiles.length > 0) {
+        message += `\n\n⏳ Import des ${remainingFiles.length} fichier(s) restant(s) en cours...`
+        alert(message)
+        setTimeout(() => retryUnifiedImportRef.current?.(), 100)
+      } else {
+        alert(message)
       }
     }
   }
@@ -1210,6 +1340,11 @@ function AdminView() {
       
       setImportProgress(null)
       setFiles([])
+      
+      // Ne vider que les fichiers Gofo, garder les Cainiao
+      const remainingCaniaoFiles = unifiedFiles.filter(f => f.detectedType === 'caniao')
+      setUnifiedFiles(remainingCaniaoFiles)
+      
       qc.invalidateQueries({ queryKey: ['tours'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
       qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
@@ -1226,7 +1361,7 @@ function AdminView() {
       const totalColis = newImports.reduce((sum, r) => sum + (r.result?.tour?.colisCount || r.result?.colisCount || 0), 0)
       const fusionColis = fusionImports.reduce((sum, r) => sum + (r.result?.totalInFile || 0), 0)
       
-      let message = `✅ ${newImports.length} tournée(s) importée(s): ${totalColis} colis`
+      let message = `✅ ${newImports.length} tournée(s) Gofo importée(s): ${totalColis} colis`
       if (fusionImports.length > 0) {
         message += `\n\nℹ️ ${fusionImports.length} fichier(s) fusionné(s): ${fusionColis} colis déjà présents`
       }
@@ -1234,7 +1369,16 @@ function AdminView() {
         message += `\n\n⚠️ ${failedResults.length} erreur(s):\n` + 
           failedResults.map(r => `• ${r.file}: ${r.error}`).join('\n')
       }
-      alert(message)
+      
+      // Si des fichiers Cainiao restent, continuer l'import automatiquement
+      if (remainingCaniaoFiles.length > 0) {
+        message += `\n\n⏳ Import des ${remainingCaniaoFiles.length} fichier(s) Cainiao en cours...`
+        alert(message)
+        // Relancer l'import unifié pour traiter les Cainiao
+        setTimeout(() => retryUnifiedImportRef.current?.(), 100)
+      } else {
+        alert(message)
+      }
       
     } catch (err: any) {
       alert(`Erreur: ${err?.response?.data?.message || err?.message}`)
@@ -1846,6 +1990,367 @@ function AdminView() {
     },
   })
 
+  // =====================================================
+  // IMPORT UNIFIÉ - Détection automatique Gofo/Cainiao
+  // =====================================================
+  const unifiedImportMutation = useMutation({
+    mutationFn: async () => {
+      if (unifiedFiles.length === 0) throw new Error('Aucun fichier sélectionné')
+      if (!selectedDate) throw new Error('Date requise')
+      
+      const results: any[] = []
+      
+      // Séparer les fichiers par type
+      const gofoFiles = unifiedFiles.filter(f => f.detectedType === 'gofo')
+      const caniaoFiles = unifiedFiles.filter(f => f.detectedType === 'caniao')
+      const unknownFiles = unifiedFiles.filter(f => f.detectedType === 'unknown' || f.detectedType === 'detecting')
+      
+      // Avertir si des fichiers sont de type inconnu
+      if (unknownFiles.length > 0) {
+        for (const uf of unknownFiles) {
+          results.push({
+            success: false,
+            file: uf.file.name,
+            error: '❓ Type non détecté - veuillez sélectionner manuellement',
+            sourceType: 'unknown'
+          })
+        }
+      }
+      
+      // ===== COLLECTER LES CHAUFFEURS INCONNUS GOFO =====
+      const gofoUnknownChauffeurs: { filename: string; chauffeur: string; similarChauffeurs: any[]; file: File }[] = []
+      const gofoKnownChauffeurs: { filename: string; chauffeur: string; sousTraitant: string }[] = []
+      
+      // ===== IMPORTER LES FICHIERS GOFO =====
+      for (const uf of gofoFiles) {
+        try {
+          const formData = new FormData()
+          formData.append('file', uf.file)
+          formData.append('date', selectedDate)
+          if (unifiedSousTraitant) {
+            formData.append('sousTraitantName', unifiedSousTraitant)
+          }
+          
+          const { data } = await api.post('/api/tours/import', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+          })
+          
+          results.push({
+            success: true,
+            file: uf.file.name,
+            result: data,
+            sourceType: 'gofo'
+          })
+        } catch (err: any) {
+          const errorData = err?.response?.data
+          
+          // Patterns inconnus
+          if (errorData?.error === 'UNKNOWN_TRACKING_PATTERNS') {
+            setUnknownPatternsModal({
+              show: true,
+              unknownPrefixes: errorData.unknownPrefixes || [],
+              expectedType: 'gofo',
+              pendingAction: () => unifiedImportMutation.mutate()
+            })
+            const initialAssignments: Record<string, 'gofo' | 'caniao' | 'autre'> = {}
+            for (const up of (errorData.unknownPrefixes || [])) {
+              initialAssignments[up.prefix] = 'gofo'
+            }
+            setPatternAssignments(initialAssignments)
+            return { results, hasUnknownPatterns: true }
+          }
+          
+          // Chauffeur inconnu Gofo - collecter pour le modal
+          if (errorData?.error === 'UNKNOWN_CHAUFFEUR') {
+            gofoUnknownChauffeurs.push({
+              filename: uf.file.name,
+              chauffeur: errorData.chauffeur,
+              similarChauffeurs: errorData.similarChauffeurs || [],
+              file: uf.file
+            })
+          } else {
+            results.push({
+              success: false,
+              file: uf.file.name,
+              error: errorData?.message || err?.message || 'Erreur import Gofo',
+              sourceType: 'gofo'
+            })
+          }
+        }
+      }
+      
+      // Si des chauffeurs Gofo inconnus, ouvrir le modal
+      if (gofoUnknownChauffeurs.length > 0) {
+        // Récupérer les chauffeurs existants
+        let existingChauffeurs: any[] = []
+        try {
+          const { data } = await api.get('/api/chauffeurs')
+          existingChauffeurs = data?.chauffeurs || []
+        } catch (e) {
+          console.error('Erreur récupération chauffeurs:', e)
+        }
+        
+        setGofoMultiModal({
+          show: true,
+          unknownChauffeurs: gofoUnknownChauffeurs,
+          knownChauffeurs: gofoKnownChauffeurs,
+          sousTraitants: sousTraitants,
+          existingChauffeurs: existingChauffeurs,
+          pendingFiles: gofoUnknownChauffeurs.map(u => u.file)
+        })
+        
+        // Initialiser les associations
+        const initialAssoc: Record<string, any> = {}
+        for (const uc of gofoUnknownChauffeurs) {
+          initialAssoc[uc.chauffeur] = { type: 'new', sousTraitant: '' }
+        }
+        setGofoAssociations(initialAssoc)
+        
+        return { results, hasUnknownGofo: true, gofoUnknownChauffeurs }
+      }
+      
+      // ===== COLLECTER LES CHAUFFEURS INCONNUS CAINIAO =====
+      const caniaoUnknownChauffeurs: { file: File; unknownChauffeurs: any[]; existingChauffeurs: any[]; sousTraitants: string[] }[] = []
+      
+      // ===== IMPORTER LES FICHIERS CAINIAO =====
+      // Séparer PDF (potentiellement multi-chauffeurs) et Excel (uni-chauffeur)
+      const caniaoPdfFiles = caniaoFiles.filter(f => f.file.name.toLowerCase().endsWith('.pdf'))
+      const caniaoExcelOnlyFiles: UnifiedFile[] = caniaoFiles.filter(f => !f.file.name.toLowerCase().endsWith('.pdf'))
+      
+      // D'abord les PDF multi-chauffeurs
+      for (const uf of caniaoPdfFiles) {
+        try {
+          const data = await uploadTourCaniao(uf.file, selectedDate)
+          results.push({
+            success: true,
+            file: uf.file.name,
+            result: data,
+            sourceType: 'caniao',
+            type: 'multi',
+            toursCount: data.tours?.length || 0,
+            colisCount: data.totalColisImported || 0
+          })
+        } catch (err: any) {
+          const errorData = err?.response?.data
+          
+          // Si NO_PLAGES, traiter comme uni-chauffeur
+          if (errorData?.error === 'NO_PLAGES' || errorData?.message?.includes('plage')) {
+            caniaoExcelOnlyFiles.push(uf)
+          }
+          // Patterns inconnus
+          else if (errorData?.error === 'UNKNOWN_TRACKING_PATTERNS') {
+            setUnknownPatternsModal({
+              show: true,
+              unknownPrefixes: errorData.unknownPrefixes || [],
+              expectedType: 'caniao',
+              pendingAction: () => unifiedImportMutation.mutate()
+            })
+            const initialAssignments: Record<string, 'gofo' | 'caniao' | 'autre'> = {}
+            for (const up of (errorData.unknownPrefixes || [])) {
+              initialAssignments[up.prefix] = 'caniao'
+            }
+            setPatternAssignments(initialAssignments)
+            return { results, hasUnknownPatterns: true }
+          }
+          // Chauffeurs inconnus (PDF multi) - collecter pour le modal
+          else if (errorData?.error === 'UNKNOWN_CHAUFFEURS') {
+            caniaoUnknownChauffeurs.push({
+              file: uf.file,
+              unknownChauffeurs: errorData.unknownChauffeurs || [],
+              existingChauffeurs: errorData.existingChauffeurs || [],
+              sousTraitants: errorData.sousTraitants || sousTraitants
+            })
+          }
+          else {
+            results.push({
+              success: false,
+              file: uf.file.name,
+              error: errorData?.message || err?.message || 'Erreur import Cainiao',
+              sourceType: 'caniao'
+            })
+          }
+        }
+      }
+      
+      // Si des PDF Cainiao ont des chauffeurs inconnus, ouvrir le modal multi
+      if (caniaoUnknownChauffeurs.length > 0) {
+        // Fusionner tous les chauffeurs inconnus
+        const allUnknownChauffeurs: any[] = []
+        for (const pending of caniaoUnknownChauffeurs) {
+          for (const uc of pending.unknownChauffeurs) {
+            if (!allUnknownChauffeurs.find(c => c.chauffeur === uc.chauffeur)) {
+              allUnknownChauffeurs.push(uc)
+            }
+          }
+        }
+        
+        setCaniaoMultiModal({
+          show: true,
+          unknownChauffeurs: allUnknownChauffeurs,
+          sousTraitants: caniaoUnknownChauffeurs[0]?.sousTraitants || sousTraitants,
+          existingChauffeurs: caniaoUnknownChauffeurs[0]?.existingChauffeurs || [],
+          pendingFile: caniaoUnknownChauffeurs[0]?.file || null,
+          filename: caniaoUnknownChauffeurs[0]?.file?.name || ''
+        })
+        
+        // Initialiser les associations
+        const initialAssoc: Record<string, any> = {}
+        for (const uc of allUnknownChauffeurs) {
+          initialAssoc[uc.chauffeur] = { type: 'new', sousTraitant: '' }
+        }
+        setCaniaoAssociations(initialAssoc)
+        
+        return { results, hasUnknownCainiao: true }
+      }
+      
+      // Puis les Excel/PDF uni-chauffeur
+      const caniaoUniUnknown: { file: File; chauffeur: string; existingChauffeurs: string[]; similarChauffeurs: string[]; sousTraitants: string[] }[] = []
+      
+      for (const uf of caniaoExcelOnlyFiles) {
+        try {
+          const formData = new FormData()
+          formData.append('file', uf.file)
+          formData.append('date', selectedDate)
+          if (unifiedSousTraitant) {
+            formData.append('sousTraitantName', unifiedSousTraitant)
+          }
+          
+          const { data } = await api.post('/api/tours/import/caniao-excel', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+          })
+          
+          results.push({
+            success: true,
+            file: uf.file.name,
+            result: data,
+            sourceType: 'caniao',
+            type: 'uni'
+          })
+        } catch (err: any) {
+          const errorData = err?.response?.data
+          
+          // Patterns inconnus
+          if (errorData?.error === 'UNKNOWN_TRACKING_PATTERNS') {
+            setUnknownPatternsModal({
+              show: true,
+              unknownPrefixes: errorData.unknownPrefixes || [],
+              expectedType: 'caniao',
+              pendingAction: () => unifiedImportMutation.mutate()
+            })
+            const initialAssignments: Record<string, 'gofo' | 'caniao' | 'autre'> = {}
+            for (const up of (errorData.unknownPrefixes || [])) {
+              initialAssignments[up.prefix] = 'caniao'
+            }
+            setPatternAssignments(initialAssignments)
+            return { results, hasUnknownPatterns: true }
+          }
+          
+          // Chauffeur inconnu uni-chauffeur
+          if (errorData?.error === 'UNKNOWN_CHAUFFEUR') {
+            caniaoUniUnknown.push({
+              file: uf.file,
+              chauffeur: errorData.chauffeur,
+              existingChauffeurs: errorData.existingChauffeurs || [],
+              similarChauffeurs: errorData.similarChauffeurs || [],
+              sousTraitants: errorData.sousTraitants || sousTraitants
+            })
+          } else {
+            results.push({
+              success: false,
+              file: uf.file.name,
+              error: errorData?.message || err?.message || 'Erreur import Cainiao',
+              sourceType: 'caniao'
+            })
+          }
+        }
+      }
+      
+      // Si des fichiers Cainiao uni-chauffeur ont des chauffeurs inconnus
+      if (caniaoUniUnknown.length > 0) {
+        // Utiliser le premier pour ouvrir le modal
+        const first = caniaoUniUnknown[0]
+        setImportType('caniao')
+        setUnknownChauffeurModal({
+          show: true,
+          chauffeur: first.chauffeur,
+          filename: first.file.name,
+          pendingFile: first.file,
+          sousTraitants: first.sousTraitants,
+          existingChauffeurs: first.existingChauffeurs.map((name: string) => ({ name, sousTraitant: '', normalized: name.toLowerCase() })),
+          similarChauffeurs: first.similarChauffeurs
+        })
+        setAssociationType('new')
+        setSelectedAssociation('')
+        
+        // Stocker les fichiers restants
+        setCaniaoExcelFiles(caniaoUniUnknown.slice(1).map(u => u.file))
+        
+        return { results, hasUnknownCaniaoUni: true }
+      }
+      
+      return { results }
+    },
+    onSuccess: (data: any) => {
+      if (data?.hasUnknownPatterns || data?.hasUnknownGofo || data?.hasUnknownCainiao || data?.hasUnknownCaniaoUni) {
+        // Un modal est ouvert, ne pas vider les fichiers
+        // Mais afficher un message partiel si des fichiers ont réussi
+        const successCount = (data?.results || []).filter((r: any) => r.success).length
+        if (successCount > 0) {
+          qc.invalidateQueries({ queryKey: ['tours'] })
+          qc.invalidateQueries({ queryKey: ['stats'] })
+          qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
+        }
+        return
+      }
+      
+      // Vider les fichiers
+      setUnifiedFiles([])
+      setUnifiedSousTraitant('')
+      
+      qc.invalidateQueries({ queryKey: ['tours'] })
+      qc.invalidateQueries({ queryKey: ['stats'] })
+      qc.invalidateQueries({ queryKey: ['mutualized-drivers'] })
+      
+      const results = data?.results || []
+      const successResults = results.filter((r: any) => r.success)
+      const failedResults = results.filter((r: any) => !r.success)
+      
+      // Compter par type
+      const gofoSuccess = successResults.filter((r: any) => r.sourceType === 'gofo')
+      const caniaoSuccess = successResults.filter((r: any) => r.sourceType === 'caniao')
+      
+      const gofoColisCount = gofoSuccess.reduce((sum: number, r: any) => 
+        sum + (r.result?.tour?.colisCount || r.result?.colisCount || 0), 0)
+      const caniaoColisCount = caniaoSuccess.reduce((sum: number, r: any) => 
+        sum + (r.colisCount || r.result?.tour?.colisCount || r.result?.colisCount || 0), 0)
+      
+      let message = '✅ Import terminé:\n'
+      
+      if (gofoSuccess.length > 0) {
+        message += `\n🔵 ${gofoSuccess.length} tournée(s) Gofo: ${gofoColisCount} colis`
+      }
+      if (caniaoSuccess.length > 0) {
+        message += `\n🟣 ${caniaoSuccess.length} tournée(s) Cainiao: ${caniaoColisCount} colis`
+      }
+      if (gofoSuccess.length === 0 && caniaoSuccess.length === 0) {
+        message = '⚠️ Aucune tournée importée'
+      }
+      
+      if (failedResults.length > 0) {
+        message += `\n\n❌ ${failedResults.length} erreur(s):\n` +
+          failedResults.map((r: any) => `• ${r.file}: ${r.error}`).join('\n')
+      }
+      
+      alert(message)
+    },
+    onError: (err: any) => {
+      alert(`Erreur: ${err?.message}`)
+    }
+  })
+
+  // Assigner la fonction mutate à la ref pour permettre aux handlers de l'appeler
+  retryUnifiedImportRef.current = () => unifiedImportMutation.mutate()
+
   // Cainiao Excel/PDF uni-chauffeur mutation - AVEC AUTO-DISPATCH
   const caniaoExcelMutation = useMutation({
     mutationFn: async () => {
@@ -2077,122 +2582,212 @@ function AdminView() {
       <div className="toursimport-flex">
         {/* Colonne Import */}
         <div className="toursimport-col">
-          {/* Import Gofo */}
+          {/* FORMULAIRE UNIFIÉ - Import avec détection automatique */}
           <div className="surface">
-            <p className="card-title">🔵 Import Gofo (Excel)</p>
+            <p className="card-title">📦 Import Tournées</p>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+              Détection automatique Gofo 🔵 / Cainiao 🟣 - Glissez tous vos fichiers ici
+            </p>
+            
             <div className="input-group">
               <label>Sous-traitant (optionnel - auto-dispatch)</label>
-              <select value={sousTraitant} onChange={(e) => setSousTraitant(e.target.value)} style={{ background: '#1a1a2e', color: '#fff' }}>
+              <select 
+                value={unifiedSousTraitant} 
+                onChange={(e) => setUnifiedSousTraitant(e.target.value)} 
+                style={{ background: '#1a1a2e', color: '#fff' }}
+              >
                 <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Auto-dispatch --</option>
-                {sousTraitants.map(st => <option key={st} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>)}
+                {sousTraitants.map(st => (
+                  <option key={st} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>
+                ))}
               </select>
             </div>
-            <div className="input-group" style={{ marginTop: 12 }} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
-              <div style={{ border: isDragging ? '2px dashed var(--accent)' : '2px dashed #444', borderRadius: 8, padding: 24, textAlign: 'center', cursor: 'pointer' }}
-                   onClick={() => document.getElementById('normal-file')?.click()}>
-                <p style={{ margin: 0, color: '#aaa' }}>{files.length === 0 ? '📂 Glissez vos fichiers PDF/Excel ici (auto-dispatch activé)' : `${files.length} fichier(s)`}</p>
-              </div>
-              <input id="normal-file" type="file" accept=".xlsx,.pdf" multiple onChange={handleFileInput} style={{ display: 'none' }} />
-              {files.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  {files.map((f, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--panel)', borderRadius: 6, marginBottom: 6 }}>
-                      <span style={{ fontSize: 13 }}>📄 {f.name}</span>
-                      <button className="ghost-btn" onClick={() => removeFile(i)} style={{ color: '#f87b7b' }}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
-              💡 Les chauffeurs connus seront automatiquement dispatchés. Les nouveaux chauffeurs demanderont une association.
-            </p>
-            <button className="btn" style={{ marginTop: 12 }} onClick={() => checkGofoImportDuplicates()} disabled={normalMutation.isPending || files.length === 0}>
-              {normalMutation.isPending ? 'Import...' : `Importer ${files.length || ''} fichier(s)`}
-            </button>
-          </div>
-
-          {/* Import Cainiao UNIFIÉ (PDF multi + Excel/PDF uni-chauffeur) */}
-          <div className="surface">
-            <p className="card-title">🟣 Import Cainiao</p>
-            <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-              PDF multi-chauffeurs ou fichiers Excel/PDF (1 chauffeur/fichier) - auto-dispatch activé
-            </p>
-            <div className="input-group">
-              <label>Sous-traitant (optionnel)</label>
-              <select value={caniaoExcelSousTraitant} onChange={(e) => setCaniaoExcelSousTraitant(e.target.value)} style={{ background: '#1a1a2e', color: '#fff' }}>
-                <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>-- Auto-dispatch --</option>
-                {sousTraitants.map(st => <option key={st} value={st} style={{ background: '#1a1a2e', color: '#fff' }}>{st}</option>)}
-              </select>
-            </div>
+            
+            {/* Zone de drop unifiée */}
             <div 
               className="input-group" 
               style={{ marginTop: 12 }}
-              onDragOver={(e) => { e.preventDefault(); setIsCaniaosDragging(true) }}
-              onDragLeave={(e) => { e.preventDefault(); setIsCaniaosDragging(false) }}
+              onDragOver={(e) => { e.preventDefault(); setIsUnifiedDragging(true) }}
+              onDragLeave={(e) => { e.preventDefault(); setIsUnifiedDragging(false) }}
               onDrop={(e) => {
                 e.preventDefault()
-                setIsCaniaosDragging(false)
+                setIsUnifiedDragging(false)
                 const droppedFiles = Array.from(e.dataTransfer.files).filter(f => 
                   f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.xlsx')
                 )
                 if (droppedFiles.length > 0) {
-                  setCaniaoExcelFiles(prev => [...prev, ...droppedFiles])
+                  addUnifiedFiles(droppedFiles)
                 }
               }}
             >
               <div 
                 style={{ 
-                  border: isCaniaosDragging ? '2px dashed #7c3aed' : '2px dashed #444', 
+                  border: isUnifiedDragging ? '2px dashed #4ade80' : '2px dashed #444', 
                   borderRadius: 8, 
                   padding: 24, 
                   textAlign: 'center', 
                   cursor: 'pointer',
-                  background: isCaniaosDragging ? 'rgba(124, 58, 237, 0.1)' : 'transparent'
+                  background: isUnifiedDragging ? 'rgba(74, 222, 128, 0.1)' : 'transparent'
                 }}
-                onClick={() => document.getElementById('caniao-unified-file')?.click()}
+                onClick={() => document.getElementById('unified-file-input')?.click()}
               >
-                <p style={{ margin: 0, color: '#aaa' }}>
-                  {caniaoExcelFiles.length === 0 
-                    ? '📂 Glissez vos fichiers PDF ou Excel Cainiao ici' 
-                    : `${caniaoExcelFiles.length} fichier(s) sélectionné(s)`}
+                <p style={{ margin: 0, color: '#aaa', fontSize: 14 }}>
+                  {unifiedFiles.length === 0 
+                    ? '📂 Glissez vos fichiers PDF/Excel ici (Gofo et Cainiao mélangés OK)' 
+                    : `${unifiedFiles.length} fichier(s) - Cliquez pour en ajouter`}
                 </p>
+                {isDetecting && (
+                  <p style={{ margin: '8px 0 0 0', color: '#f59e0b', fontSize: 12 }}>
+                    ⏳ Détection du type en cours...
+                  </p>
+                )}
               </div>
               <input 
-                id="caniao-unified-file" 
+                id="unified-file-input" 
                 type="file" 
                 accept=".pdf,.xlsx" 
                 multiple
                 onChange={(e) => {
                   const newFiles = Array.from(e.target.files || [])
-                  setCaniaoExcelFiles(prev => [...prev, ...newFiles])
+                  if (newFiles.length > 0) {
+                    addUnifiedFiles(newFiles)
+                  }
                   e.target.value = ''
                 }} 
                 style={{ display: 'none' }} 
               />
-              {caniaoExcelFiles.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  {caniaoExcelFiles.map((f, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--panel)', borderRadius: 6, marginBottom: 6 }}>
-                      <span style={{ fontSize: 13 }}>
-                        {f.name.toLowerCase().endsWith('.pdf') ? '📕' : '📗'} {f.name}
-                      </span>
-                      <button className="ghost-btn" onClick={() => setCaniaoExcelFiles(prev => prev.filter((_, idx) => idx !== i))} style={{ color: '#f87b7b', fontSize: 12 }}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
-            <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
-              💡 PDF multi-chauffeurs (avec plages) ou Excel/PDF uni-chauffeur détectés automatiquement
+            
+            {/* Liste des fichiers avec type détecté */}
+            {unifiedFiles.length > 0 && (
+              <div style={{ marginTop: 12, maxHeight: 300, overflow: 'auto' }}>
+                {unifiedFiles.map((uf, i) => (
+                  <div 
+                    key={i} 
+                    style={{ 
+                      display: 'flex', 
+                      justifyContent: 'space-between', 
+                      alignItems: 'center', 
+                      padding: '10px 12px', 
+                      background: 'var(--panel)', 
+                      borderRadius: 6, 
+                      marginBottom: 6,
+                      borderLeft: uf.detectedType === 'gofo' 
+                        ? '3px solid #3b82f6' 
+                        : uf.detectedType === 'caniao' 
+                          ? '3px solid #8b5cf6'
+                          : uf.detectedType === 'detecting'
+                            ? '3px solid #f59e0b'
+                            : '3px solid #666'
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 13 }}>
+                        {uf.file.name.toLowerCase().endsWith('.pdf') ? '📕' : '📗'} {uf.file.name}
+                      </span>
+                      {uf.isMultiChauffeur && (
+                        <span style={{ marginLeft: 8, fontSize: 11, color: '#888' }}>(multi-chauffeurs)</span>
+                      )}
+                    </div>
+                    
+                    {/* Badge de type détecté ou sélecteur */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {uf.detectedType === 'detecting' ? (
+                        <span style={{ fontSize: 12, color: '#f59e0b' }}>⏳ Détection...</span>
+                      ) : uf.detectedType === 'unknown' ? (
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              setFileType(i, e.target.value as 'gofo' | 'caniao')
+                            }
+                          }}
+                          style={{ 
+                            padding: '4px 8px', 
+                            borderRadius: 4, 
+                            border: '1px solid #f59e0b',
+                            background: '#1a1a2e', 
+                            color: '#fff',
+                            fontSize: 12
+                          }}
+                        >
+                          <option value="" style={{ background: '#1a1a2e', color: '#fff' }}>❓ Choisir type</option>
+                          <option value="gofo" style={{ background: '#1a1a2e', color: '#fff' }}>🔵 Gofo</option>
+                          <option value="caniao" style={{ background: '#1a1a2e', color: '#fff' }}>🟣 Cainiao</option>
+                        </select>
+                      ) : (
+                        <button
+                          onClick={() => setFileType(i, uf.detectedType === 'gofo' ? 'caniao' : 'gofo')}
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: 4,
+                            border: 'none',
+                            background: uf.detectedType === 'gofo' ? '#3b82f6' : '#8b5cf6',
+                            color: '#fff',
+                            fontSize: 12,
+                            cursor: 'pointer'
+                          }}
+                          title="Cliquez pour changer le type"
+                        >
+                          {uf.detectedType === 'gofo' ? '🔵 Gofo' : '🟣 Cainiao'}
+                          {uf.confidence > 0 && !uf.manualOverride && (
+                            <span style={{ marginLeft: 4, opacity: 0.7 }}>({uf.confidence}%)</span>
+                          )}
+                        </button>
+                      )}
+                      
+                      <button 
+                        className="ghost-btn" 
+                        onClick={() => removeUnifiedFile(i)} 
+                        style={{ color: '#f87b7b', fontSize: 14, padding: '2px 6px' }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {/* Récap par type */}
+            {unifiedFiles.length > 0 && (
+              <div style={{ marginTop: 12, display: 'flex', gap: 16, fontSize: 13 }}>
+                <span style={{ color: '#3b82f6' }}>
+                  🔵 Gofo: {unifiedFiles.filter(f => f.detectedType === 'gofo').length}
+                </span>
+                <span style={{ color: '#8b5cf6' }}>
+                  🟣 Cainiao: {unifiedFiles.filter(f => f.detectedType === 'caniao').length}
+                </span>
+                {unifiedFiles.filter(f => f.detectedType === 'unknown').length > 0 && (
+                  <span style={{ color: '#f59e0b' }}>
+                    ❓ À définir: {unifiedFiles.filter(f => f.detectedType === 'unknown').length}
+                  </span>
+                )}
+              </div>
+            )}
+            
+            <p style={{ fontSize: 12, color: '#888', marginTop: 12 }}>
+              💡 Le type est détecté automatiquement. Cliquez sur le badge pour le modifier si nécessaire.
             </p>
+            
             <button 
               className="btn" 
-              style={{ marginTop: 12 }} 
-              onClick={() => checkCaniaoImportDuplicates()} 
-              disabled={caniaoUnifiedMutation.isPending || caniaoExcelFiles.length === 0}
+              style={{ marginTop: 12, width: '100%' }} 
+              onClick={() => unifiedImportMutation.mutate()} 
+              disabled={
+                unifiedImportMutation.isPending || 
+                unifiedFiles.length === 0 || 
+                isDetecting ||
+                unifiedFiles.some(f => f.detectedType === 'unknown' || f.detectedType === 'detecting')
+              }
             >
-              {caniaoUnifiedMutation.isPending ? 'Import en cours...' : `Importer ${caniaoExcelFiles.length || ''} fichier(s) Cainiao`}
+              {unifiedImportMutation.isPending 
+                ? 'Import en cours...' 
+                : isDetecting
+                  ? 'Détection en cours...'
+                  : unifiedFiles.some(f => f.detectedType === 'unknown')
+                    ? '⚠️ Définissez le type des fichiers inconnus'
+                    : `Importer ${unifiedFiles.length} fichier(s)`}
             </button>
           </div>
         </div>
