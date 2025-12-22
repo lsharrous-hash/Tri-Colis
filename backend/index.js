@@ -139,7 +139,7 @@ function findMutualizedDrivers(date, sousTraitant) {
     t.date === date && 
     t.isDispatcherImport === true &&
     t.isOptimized === true &&
-    (sousTraitant ? t.sousTraitantName === sousTraitant : true)
+    (sousTraitant ? (t.sousTraitantName === sousTraitant || t.sousTraitant === sousTraitant) : true)
   );
   
   // Récupérer les tournées ajoutées manuellement (dispatcher import sans isOptimized)
@@ -147,10 +147,11 @@ function findMutualizedDrivers(date, sousTraitant) {
     t.date === date && 
     t.isDispatcherImport === true &&
     !t.isOptimized &&
-    (sousTraitant ? t.sousTraitantName === sousTraitant : true)
+    (sousTraitant ? (t.sousTraitantName === sousTraitant || t.sousTraitant === sousTraitant) : true)
   );
   
   // Récupérer les tournées Gofo (non-Cainiao, non-dispatcher) pour cette date
+  // Inclure aussi les tournées mutualisées
   const gofoTours = TOURS.filter(t => 
     t.date === date && 
     !t.isCaniao &&
@@ -159,7 +160,7 @@ function findMutualizedDrivers(date, sousTraitant) {
   
   // Si un sous-traitant est spécifié (dispatcher), filtrer les Gofo
   const filteredGofoTours = sousTraitant 
-    ? gofoTours.filter(t => t.sousTraitantName === sousTraitant)
+    ? gofoTours.filter(t => t.sousTraitantName === sousTraitant || t.sousTraitant === sousTraitant)
     : gofoTours;
   
   // Récupérer les tournées Cainiao pour cette date (toujours toutes)
@@ -173,8 +174,10 @@ function findMutualizedDrivers(date, sousTraitant) {
   
   // 1. D'abord ajouter les tournées OPTIMISÉES (prioritaires)
   for (const tour of optimizedTours) {
-    const normalizedName = normalizeDriverName(tour.chauffeurName);
-    const displayName = tour.chauffeurName.trim();
+    const chauffeurName = tour.chauffeurName || tour.chauffeur || '';
+    if (!chauffeurName) continue;
+    const normalizedName = normalizeDriverName(chauffeurName);
+    const displayName = chauffeurName.trim();
     const tourColisCount = tour.colisCount || COLIS.filter(c => c.tourId === tour.id).length;
     
     // Utiliser les compteurs mémorisés s'ils existent
@@ -184,7 +187,7 @@ function findMutualizedDrivers(date, sousTraitant) {
     driversMap.set(normalizedName, {
       name: displayName,
       normalizedName: normalizedName,
-      sousTraitant: tour.sousTraitantName,
+      sousTraitant: tour.sousTraitantName || tour.sousTraitant,
       gofoTourIds: [],
       caniaoTourIds: [],
       optimizedTourId: tour.id,
@@ -198,8 +201,10 @@ function findMutualizedDrivers(date, sousTraitant) {
   
   // 1b. Ajouter les tournées AJOUTÉES MANUELLEMENT par le dispatcher
   for (const tour of manualDispatcherTours) {
-    const normalizedName = normalizeDriverName(tour.chauffeurName);
-    const displayName = tour.chauffeurName.trim();
+    const chauffeurName = tour.chauffeurName || tour.chauffeur || '';
+    if (!chauffeurName) continue;
+    const normalizedName = normalizeDriverName(chauffeurName);
+    const displayName = chauffeurName.trim();
     const tourColisCount = tour.colisCount || COLIS.filter(c => c.tourId === tour.id).length;
     
     // Si déjà dans le map (même nom normalisé), additionner
@@ -210,7 +215,7 @@ function findMutualizedDrivers(date, sousTraitant) {
       driversMap.set(normalizedName, {
         name: displayName,
         normalizedName: normalizedName,
-        sousTraitant: tour.sousTraitantName,
+        sousTraitant: tour.sousTraitantName || tour.sousTraitant,
         gofoTourIds: [],
         caniaoTourIds: [],
         dispatcherTourId: tour.id,
@@ -225,8 +230,10 @@ function findMutualizedDrivers(date, sousTraitant) {
   
   // 2. Ajouter les chauffeurs Gofo (si pas déjà optimisé)
   for (const tour of filteredGofoTours) {
-    const normalizedName = normalizeDriverName(tour.chauffeurName);
-    const displayName = tour.chauffeurName.trim();
+    const chauffeurName = tour.chauffeurName || tour.chauffeur || '';
+    if (!chauffeurName) continue;
+    const normalizedName = normalizeDriverName(chauffeurName);
+    const displayName = chauffeurName.trim();
     
     // Skip si déjà optimisé
     if (driversMap.has(normalizedName) && driversMap.get(normalizedName).isOptimized) {
@@ -238,8 +245,8 @@ function findMutualizedDrivers(date, sousTraitant) {
     
     if (!driversMap.has(normalizedName)) {
       // Chercher le sous-traitant dans chauffeurs.json si pas dans la tournée
-      const sousTraitantFromMapping = findSousTraitantForChauffeur(tour.chauffeurName);
-      const finalSousTraitant = tour.sousTraitantName || sousTraitantFromMapping || null;
+      const sousTraitantFromMapping = findSousTraitantForChauffeur(chauffeurName);
+      const finalSousTraitant = tour.sousTraitantName || tour.sousTraitant || sousTraitantFromMapping || null;
       driversMap.set(normalizedName, {
         name: displayName,
         normalizedName: normalizedName,
@@ -263,7 +270,9 @@ function findMutualizedDrivers(date, sousTraitant) {
   
   // Matcher les chauffeurs Cainiao avec fuzzy matching
   for (const tour of caniaoTours) {
-    const normalizedCaniaoName = normalizeDriverName(tour.chauffeurName);
+    const chauffeurName = tour.chauffeurName || tour.chauffeur || '';
+    if (!chauffeurName) continue;
+    const normalizedCaniaoName = normalizeDriverName(chauffeurName);
     let matched = false;
     
     // Calculer colisCount si absent (pour les anciennes tournées)
@@ -271,7 +280,7 @@ function findMutualizedDrivers(date, sousTraitant) {
     
     // Chercher un match dans les chauffeurs existants (par nom normalisé)
     for (const [existingNormName, driver] of driversMap.entries()) {
-      if (existingNormName === normalizedCaniaoName || areDriverNamesMatching(tour.chauffeurName, driver.name)) {
+      if (existingNormName === normalizedCaniaoName || areDriverNamesMatching(chauffeurName, driver.name)) {
         // Si le chauffeur est déjà optimisé, on skip (les colis sont déjà dans la tournée optimisée)
         if (driver.isOptimized) {
           matched = true;
@@ -286,10 +295,10 @@ function findMutualizedDrivers(date, sousTraitant) {
     
     // Si pas de match, créer une nouvelle entrée (chauffeur Cainiao uniquement)
     if (!matched) {
-      const displayName = tour.chauffeurName.charAt(0).toUpperCase() + tour.chauffeurName.slice(1).toLowerCase();
+      const displayName = chauffeurName.charAt(0).toUpperCase() + chauffeurName.slice(1).toLowerCase();
       // Chercher le sous-traitant dans chauffeurs.json OU depuis la tournée
-      const sousTraitantFromMapping = findSousTraitantForChauffeur(tour.chauffeurName);
-      const finalSousTraitant = tour.sousTraitantName || sousTraitantFromMapping || null;
+      const sousTraitantFromMapping = findSousTraitantForChauffeur(chauffeurName);
+      const finalSousTraitant = tour.sousTraitantName || tour.sousTraitant || sousTraitantFromMapping || null;
       driversMap.set(normalizedCaniaoName, {
         name: displayName,
         normalizedName: normalizedCaniaoName,
@@ -2468,43 +2477,42 @@ app.post(
         });
       }
 
-      // *** ANTI-DOUBLON : Supprimer l'ancienne tournée Cainiao si elle existe pour ce chauffeur + date ***
-      const existingTourIndex = TOURS.findIndex(t => 
-        t.chauffeurName?.toLowerCase() === chauffeurName.toLowerCase() && 
+      // *** FUSION : Chercher une tournée Cainiao existante pour ce chauffeur + date ***
+      let existingTour = TOURS.find(t => 
+        (t.chauffeurName || t.chauffeur || '').toLowerCase() === chauffeurName.toLowerCase() && 
         t.date === date && 
         t.isCaniao === true
       );
       
-      if (existingTourIndex >= 0) {
-        const oldTour = TOURS[existingTourIndex];
-        log('INFO', 'Tournée Cainiao Excel existante trouvée - remplacement', { 
-          oldTourId: oldTour.id, 
-          chauffeur: chauffeurName, 
-          date: date,
-          oldST: oldTour.sousTraitantName,
-          newST: sousTraitantName
+      let newTour;
+      let isFusion = false;
+      
+      if (existingTour) {
+        // Fusionner avec la tournée existante
+        newTour = existingTour;
+        isFusion = true;
+        log('INFO', 'Fusion avec tournée Cainiao existante', { 
+          tourId: existingTour.id, 
+          chauffeur: chauffeurName,
+          existingColis: existingTour.colisCount 
         });
-        // Supprimer les colis de l'ancienne tournée
-        COLIS = COLIS.filter(c => c.tourId !== oldTour.id);
-        // Supprimer l'ancienne tournée
-        TOURS.splice(existingTourIndex, 1);
+      } else {
+        // Créer nouvelle tournée Cainiao
+        const tourId = NEXT_TOUR_ID++;
+        newTour = {
+          id: tourId,
+          chauffeurName: chauffeurName,
+          sousTraitantName: sousTraitantName,
+          date: date,
+          isCaniao: true,
+          colisCount: 0,
+          sourceFile: uploaded.filename,
+          sourceOriginalName: uploaded.originalname,
+          createdAt: new Date().toISOString(),
+          createdBy: req.user.login
+        };
+        TOURS.push(newTour);
       }
-
-      // Créer la tournée Cainiao avec les colis uniques
-      const tourId = NEXT_TOUR_ID++;
-      const newTour = {
-        id: tourId,
-        chauffeurName: chauffeurName,
-        sousTraitantName: sousTraitantName,
-        date: date,
-        isCaniao: true,
-        colisCount: uniqueColis.length,
-        sourceFile: uploaded.filename,
-        sourceOriginalName: uploaded.originalname,
-        createdAt: new Date().toISOString(),
-        createdBy: req.user.login
-      };
-      TOURS.push(newTour);
 
       // Créer les colis (uniquement les uniques)
       const createdColis = [];
@@ -2512,11 +2520,11 @@ app.post(
         const colisId = NEXT_COLIS_ID++;
         const newColis = {
           id: colisId,
-          tourId: tourId,
+          tourId: newTour.id,
           date: date,
           chauffeurName: chauffeurName,
           sousTraitantName: sousTraitantName,
-          orderNumber: i + 1,
+          orderNumber: (newTour.colisCount || 0) + i + 1,
           trackingNumber: uniqueColis[i].trackingNumber,
           address: uniqueColis[i].address,
           city: uniqueColis[i].city || "",
@@ -2527,9 +2535,12 @@ app.post(
         COLIS.push(newColis);
         createdColis.push(newColis);
       }
+      
+      // Mettre à jour le compteur
+      newTour.colisCount = (newTour.colisCount || 0) + createdColis.length;
 
-      // Créer le backup si c'est un admin qui importe
-      if (req.user.role === 'ADMIN') {
+      // Créer le backup si c'est un admin qui importe (seulement nouvelle tournée)
+      if (req.user.role === 'ADMIN' && !isFusion) {
         createAdminTourBackup(newTour, createdColis, req.user.role);
         
         // Mémoriser l'association chauffeur → sous-traitant pour les prochains imports
@@ -2543,16 +2554,20 @@ app.post(
       // Sauvegarder
       saveDataToFile();
 
-      log('INFO', 'Import Cainiao Excel réussi', {
+      log('INFO', isFusion ? 'Colis Cainiao fusionnés' : 'Import Cainiao Excel réussi', {
         chauffeur: chauffeurName,
-        tourId: tourId,
-        colisCount: createdColis.length,
+        tourId: newTour.id,
+        colisAdded: createdColis.length,
+        totalColis: newTour.colisCount,
         duplicatesIgnored: duplicates.length + duplicatesInFile.length,
-        user: req.user.login
+        user: req.user.login,
+        isFusion
       });
 
       // Construire le message
-      let message = `Tournée Cainiao créée pour ${chauffeurName}: ${createdColis.length} colis`;
+      let message = isFusion 
+        ? `${createdColis.length} colis ajoutés à la tournée Cainiao existante de ${chauffeurName} (total: ${newTour.colisCount})`
+        : `Tournée Cainiao créée pour ${chauffeurName}: ${createdColis.length} colis`;
       if (duplicates.length > 0 || duplicatesInFile.length > 0) {
         message += ` (${duplicates.length + duplicatesInFile.length} doublons ignorés)`;
       }
@@ -2562,9 +2577,11 @@ app.post(
         message: message,
         tour: newTour,
         colisCount: createdColis.length,
+        totalColisInTour: newTour.colisCount,
         duplicatesIgnored: duplicates.length,
         duplicatesInFileIgnored: duplicatesInFile.length,
-        autoDispatched: !req.body.sousTraitantName || req.body.sousTraitantName.trim() === ''
+        autoDispatched: !req.body.sousTraitantName || req.body.sousTraitantName.trim() === '',
+        isFusion: isFusion
       });
 
     } catch (err) {
@@ -2577,6 +2594,396 @@ app.post(
       res.status(500).json({
         error: "IMPORT_ERROR",
         message: "Erreur lors de l'import Cainiao Excel : " + err.message
+      });
+    }
+  }
+);
+
+// ==============================
+// API IMPORT TOURNÉE MUTUALISÉE - Sépare en Gofo + Cainiao
+// ==============================
+app.post(
+  "/api/tours/import/mutualized",
+  authMiddleware(["ADMIN", "DISPATCHER"]),
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const uploaded = req.file;
+      let { date, sousTraitantName } = req.body;
+
+      // Validation
+      if (!uploaded) {
+        return res.status(400).json({
+          error: "NO_FILE",
+          message: "Aucun fichier fourni",
+        });
+      }
+
+      if (!date) {
+        return res.status(400).json({
+          error: "MISSING_DATE",
+          message: "La date est requise",
+        });
+      }
+
+      // Extraire le nom du chauffeur du nom de fichier
+      const chauffeurName = extractChauffeurFromFilename(uploaded.originalname);
+      
+      // AUTO-DISPATCH : Si ADMIN et pas de sous-traitant spécifié, chercher dans le mapping
+      if (req.user.role === 'ADMIN' && (!sousTraitantName || sousTraitantName.trim() === '')) {
+        const foundST = findSousTraitantForChauffeur(chauffeurName);
+        
+        if (foundST) {
+          sousTraitantName = foundST;
+          log('INFO', 'Auto-dispatch mutualisé: sous-traitant trouvé', { chauffeur: chauffeurName, sousTraitant: foundST });
+        } else {
+          // Chauffeur inconnu
+          const existingChauffeurs = CHAUFFEURS_MAPPING.chauffeurs.map(c => ({
+            name: c.name,
+            sousTraitant: c.sousTraitant,
+            normalized: c.normalized
+          }));
+          
+          const similarChauffeurs = existingChauffeurs.filter(c => {
+            const newNormalized = normalizeDriverName(chauffeurName);
+            return c.normalized.includes(newNormalized.substring(0, 3)) ||
+                   newNormalized.includes(c.normalized.substring(0, 3)) ||
+                   levenshteinDistance(c.normalized, newNormalized) <= 3;
+          });
+          
+          return res.status(400).json({
+            error: "UNKNOWN_CHAUFFEUR",
+            message: `Chauffeur "${chauffeurName}" inconnu. Veuillez l'associer à un sous-traitant.`,
+            chauffeur: chauffeurName,
+            filename: uploaded.originalname,
+            needsAssociation: true,
+            sousTraitants: getAllSousTraitants(),
+            existingChauffeurs: existingChauffeurs,
+            similarChauffeurs: similarChauffeurs
+          });
+        }
+      } else if (req.user.role === 'DISPATCHER') {
+        sousTraitantName = req.user.sousTraitantName;
+      } else if (!sousTraitantName || sousTraitantName.trim() === '') {
+        return res.status(400).json({
+          error: "MISSING_SOUS_TRAITANT",
+          message: "Le sous-traitant est requis",
+        });
+      }
+
+      log('INFO', 'Import fichier MUTUALISÉ démarré - sera séparé en Gofo + Cainiao', { 
+        file: uploaded.originalname,
+        chauffeur: chauffeurName,
+        sousTraitant: sousTraitantName 
+      });
+
+      // Lecture du fichier
+      let allColis = [];
+      const ext = path.extname(uploaded.originalname).toLowerCase();
+
+      if (ext === ".pdf") {
+        log('INFO', 'PDF mutualisé détecté', { file: uploaded.originalname });
+        
+        // Essayer avec pdfplumber d'abord (extrait les adresses)
+        try {
+          const colis = await parsePDFWithPython(uploaded.path);
+          allColis = colis.map(c => {
+            // Nettoyer le tracking (retirer \n et suffixes comme HD;, 3;, etc.)
+            let tracking = c.trackingNumber || c.tracking || '';
+            tracking = tracking.replace(/[\r\n]+/g, '').replace(/;.*$/, '').trim();
+            
+            return {
+              tracking: tracking,
+              address: c.address || ''
+            };
+          }).filter(c => c.tracking && c.tracking.length >= 8);
+          log('DEBUG', 'parsePDFWithPython résultat', { count: allColis.length });
+        } catch (e) {
+          log('DEBUG', 'parsePDFWithPython échoué', { error: e.message });
+        }
+        
+        // Extraire aussi du texte brut pour compléter (PDFs Spoke)
+        const dataBuffer = fs.readFileSync(uploaded.path);
+        const pdfParse = require("pdf-parse");
+        const pdfData = await pdfParse(dataBuffer);
+        let text = pdfData.text;
+        
+        // Extraire tous les trackings avec regex (12-16 chiffres)
+        const trackingRegex = /\b(?:GFFR|DOFR|CNFR|CRFR|SPFR)\d{12,16}\b/gi;
+        const matches = text.match(trackingRegex) || [];
+        
+        log('DEBUG', 'Extraction trackings du texte brut PDF', {
+          matchesFound: matches.length,
+          samples: matches.slice(0, 5)
+        });
+        
+        // Ajouter les trackings uniques manquants (sans adresse)
+        const existingSet = new Set(allColis.map(c => c.tracking.toUpperCase()));
+        for (const match of matches) {
+          const upper = match.toUpperCase();
+          if (!existingSet.has(upper)) {
+            allColis.push({ tracking: upper, address: '' });
+            existingSet.add(upper);
+          }
+        }
+        
+        log('DEBUG', 'Total colis après fusion', { count: allColis.length });
+      } else if (ext === ".xlsx" || ext === ".xls") {
+        log('INFO', 'Excel mutualisé détecté', { file: uploaded.originalname });
+        const workbook = xlsx.readFile(uploaded.path);
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = xlsx.utils.sheet_to_json(sheet, { header: 1 });
+        
+        // Chercher la colonne tracking
+        let trackingCol = -1;
+        const headerRow = rows[0] || [];
+        for (let i = 0; i < headerRow.length; i++) {
+          const h = String(headerRow[i] || '').toLowerCase().trim();
+          if (h.includes('tracking') || h.includes('numero') || h.includes('numéro') || 
+              h.includes('colis') || h.includes('waybill') || h.includes('n°')) {
+            trackingCol = i;
+            break;
+          }
+        }
+        
+        // Si pas de header, chercher pattern tracking
+        if (trackingCol === -1 && rows.length > 1) {
+          for (let i = 0; i < (rows[1] || []).length; i++) {
+            const val = String(rows[1][i] || '');
+            if (/^[A-Z]{2,4}[A-Z]{2}\d{5,}/.test(val)) {
+              trackingCol = i;
+              break;
+            }
+          }
+        }
+        
+        // Extraire les trackings
+        const startRow = trackingCol !== -1 && headerRow.some(h => 
+          String(h || '').toLowerCase().includes('tracking')) ? 1 : 0;
+        
+        for (let i = startRow; i < rows.length; i++) {
+          const row = rows[i];
+          if (!row || row.length === 0) continue;
+          
+          const tracking = trackingCol >= 0 ? String(row[trackingCol] || '').trim() : '';
+          if (tracking && tracking.length >= 8) {
+            allColis.push({ tracking, address: '' });
+          }
+        }
+      } else {
+        fs.unlinkSync(uploaded.path);
+        return res.status(400).json({
+          error: "INVALID_FORMAT",
+          message: "Format non supporté. Utilisez PDF ou Excel."
+        });
+      }
+
+      // Supprimer le fichier temporaire
+      if (fs.existsSync(uploaded.path)) {
+        fs.unlinkSync(uploaded.path);
+      }
+
+      // Filtrer les colis sans tracking valide
+      allColis = allColis.filter(c => c.tracking && c.tracking.length >= 8);
+
+      if (allColis.length === 0) {
+        return res.status(400).json({
+          error: "NO_COLIS",
+          message: "Aucun colis trouvé dans le fichier"
+        });
+      }
+
+      // Séparer les colis par type
+      const gofoColis = [];
+      const caniaoColis = [];
+      
+      for (const colis of allColis) {
+        if (!colis.tracking) continue;
+        const detected = detectTrackingType(colis.tracking);
+        if (detected.type === 'gofo') {
+          gofoColis.push(colis);
+        } else if (detected.type === 'caniao') {
+          caniaoColis.push(colis);
+        }
+        // Ignorer les inconnus
+      }
+
+      log('INFO', 'Fichier mutualisé analysé', {
+        total: allColis.length,
+        gofo: gofoColis.length,
+        caniao: caniaoColis.length
+      });
+
+      // Vérifier les doublons existants (tous les colis de la base)
+      const existingTrackings = new Set(COLIS.filter(c => c.tracking).map(c => c.tracking.toUpperCase()));
+      
+      let gofoTour = null;
+      let caniaoTour = null;
+      let gofoCreated = 0;
+      let caniaoCreated = 0;
+      let duplicatesIgnored = 0;
+
+      // === TOURNÉE GOFO : Chercher existante ou créer ===
+      if (gofoColis.length > 0) {
+        // Chercher une tournée Gofo existante pour ce chauffeur/date
+        gofoTour = TOURS.find(t => 
+          t.date === date &&
+          !t.isCaniao &&
+          (t.chauffeurName || t.chauffeur || '').toLowerCase() === chauffeurName.toLowerCase()
+        );
+
+        if (gofoTour) {
+          log('INFO', 'Fusion avec tournée Gofo existante', { 
+            tourId: gofoTour.id, 
+            chauffeur: chauffeurName,
+            existingColis: gofoTour.colisCount 
+          });
+        } else {
+          // Créer nouvelle tournée Gofo
+          const gofoTourId = `tour-${Date.now()}-gofo`;
+          gofoTour = {
+            id: gofoTourId,
+            name: `${chauffeurName} - ${date}`,
+            chauffeurName: chauffeurName,
+            chauffeur: chauffeurName,
+            sousTraitantName: sousTraitantName,
+            sousTraitant: sousTraitantName,
+            date: date,
+            isCaniao: false,
+            colisCount: 0,
+            createdAt: new Date().toISOString(),
+            sourceFile: uploaded.originalname,
+            createdBy: req.user.login
+          };
+          TOURS.push(gofoTour);
+        }
+
+        const seenGofo = new Set();
+        let orderNum = (gofoTour.colisCount || 0) + 1;
+        for (const colis of gofoColis) {
+          const trackingUpper = colis.tracking.toUpperCase();
+          if (existingTrackings.has(trackingUpper) || seenGofo.has(trackingUpper)) {
+            duplicatesIgnored++;
+            continue;
+          }
+          seenGofo.add(trackingUpper);
+          existingTrackings.add(trackingUpper);
+
+          const colisId = `colis-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          COLIS.push({
+            id: colisId,
+            tourId: gofoTour.id,
+            date: date,
+            chauffeurName: chauffeurName,
+            sousTraitantName: sousTraitantName,
+            orderNumber: orderNum++,
+            trackingNumber: colis.tracking,
+            address: colis.address || '',
+            city: '',
+            status: 'pending',
+            scannedAt: null,
+            scannedBy: null
+          });
+          gofoCreated++;
+        }
+        gofoTour.colisCount = (gofoTour.colisCount || 0) + gofoCreated;
+      }
+
+      // === TOURNÉE CAINIAO : Chercher existante ou créer ===
+      if (caniaoColis.length > 0) {
+        // Chercher une tournée Cainiao existante pour ce chauffeur/date
+        caniaoTour = TOURS.find(t => 
+          t.date === date &&
+          t.isCaniao === true &&
+          (t.chauffeurName || t.chauffeur || '').toLowerCase() === chauffeurName.toLowerCase()
+        );
+
+        if (caniaoTour) {
+          log('INFO', 'Fusion avec tournée Cainiao existante', { 
+            tourId: caniaoTour.id, 
+            chauffeur: chauffeurName,
+            existingColis: caniaoTour.colisCount 
+          });
+        } else {
+          // Créer nouvelle tournée Cainiao
+          const caniaoTourId = `tour-${Date.now()}-caniao`;
+          caniaoTour = {
+            id: caniaoTourId,
+            name: `${chauffeurName} - ${date}`,
+            chauffeurName: chauffeurName,
+            chauffeur: chauffeurName,
+            sousTraitantName: sousTraitantName,
+            sousTraitant: sousTraitantName,
+            date: date,
+            isCaniao: true,
+            colisCount: 0,
+            createdAt: new Date().toISOString(),
+            sourceFile: uploaded.originalname,
+            createdBy: req.user.login
+          };
+          TOURS.push(caniaoTour);
+        }
+
+        const seenCaniao = new Set();
+        let orderNumCaniao = (caniaoTour.colisCount || 0) + 1;
+        for (const colis of caniaoColis) {
+          const trackingUpper = colis.tracking.toUpperCase();
+          if (existingTrackings.has(trackingUpper) || seenCaniao.has(trackingUpper)) {
+            duplicatesIgnored++;
+            continue;
+          }
+          seenCaniao.add(trackingUpper);
+          existingTrackings.add(trackingUpper);
+
+          const colisId = `colis-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          COLIS.push({
+            id: colisId,
+            tourId: caniaoTour.id,
+            date: date,
+            chauffeurName: chauffeurName,
+            sousTraitantName: sousTraitantName,
+            orderNumber: orderNumCaniao++,
+            trackingNumber: colis.tracking,
+            address: colis.address || '',
+            city: '',
+            status: 'pending',
+            scannedAt: null,
+            scannedBy: null
+          });
+          caniaoCreated++;
+        }
+        caniaoTour.colisCount = (caniaoTour.colisCount || 0) + caniaoCreated;
+      }
+
+      saveDataToFile();
+
+      log('INFO', 'Import mutualisé terminé - séparé en 2 tournées', {
+        chauffeur: chauffeurName,
+        gofoCount: gofoCreated,
+        caniaoCount: caniaoCreated,
+        duplicatesIgnored
+      });
+
+      res.json({
+        success: true,
+        message: `Fichier mutualisé importé: ${gofoCreated} Gofo + ${caniaoCreated} Cainiao`,
+        gofoTour: gofoTour,
+        caniaoTour: caniaoTour,
+        gofoCount: gofoCreated,
+        caniaoCount: caniaoCreated,
+        totalCount: gofoCreated + caniaoCreated,
+        duplicatesIgnored: duplicatesIgnored
+      });
+
+    } catch (err) {
+      console.error('Erreur import mutualisé:', err);
+      log('ERROR', 'Erreur import mutualisé', { error: err.message, stack: err.stack });
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      res.status(500).json({
+        error: "IMPORT_ERROR",
+        message: "Erreur lors de l'import mutualisé : " + err.message
       });
     }
   }
@@ -2792,29 +3199,53 @@ app.post(
         });
       }
 
-      // Création de la tournée avec les colis uniques
-      const newTourId = NEXT_TOUR_ID++;
+      // Création de la tournée avec les colis uniques - OU fusion avec existante
       
-      const newTour = {
-        id: newTourId,
-        date,
-        chauffeurName,
-        sousTraitantName,
-        tourneeName,
-        colisCount: uniqueColis.length,
-        sourceFile: uploaded.filename,
-        sourceOriginalName: uploaded.originalname,
-        createdAt: new Date().toISOString(),
-        createdBy: req.user.login
-      };
+      // Chercher une tournée existante pour ce chauffeur/date (même type)
+      let existingTour = TOURS.find(t => 
+        t.date === date &&
+        !t.isCaniao &&
+        (t.chauffeurName || t.chauffeur || '').toLowerCase() === chauffeurName.toLowerCase()
+      );
 
-      TOURS.push(newTour);
+      let newTour;
+      let isFusion = false;
+      
+      if (existingTour) {
+        // Fusionner avec la tournée existante
+        newTour = existingTour;
+        isFusion = true;
+        log('INFO', 'Fusion avec tournée Gofo existante', { 
+          tourId: existingTour.id, 
+          chauffeur: chauffeurName,
+          existingColis: existingTour.colisCount 
+        });
+      } else {
+        // Créer nouvelle tournée
+        const newTourId = NEXT_TOUR_ID++;
+        
+        newTour = {
+          id: newTourId,
+          date,
+          chauffeurName,
+          sousTraitantName,
+          tourneeName,
+          colisCount: 0,
+          sourceFile: uploaded.filename,
+          sourceOriginalName: uploaded.originalname,
+          createdAt: new Date().toISOString(),
+          createdBy: req.user.login
+        };
+
+        TOURS.push(newTour);
+      }
 
       // Création des colis (uniquement les uniques)
+      let colisAdded = 0;
       for (const c of uniqueColis) {
         const newColis = {
           id: NEXT_COLIS_ID++,
-          tourId: newTourId,
+          tourId: newTour.id,
           date,
           chauffeurName,
           sousTraitantName,
@@ -2828,11 +3259,15 @@ app.post(
           scannedBy: null
         };
         COLIS.push(newColis);
+        colisAdded++;
       }
+      
+      // Mettre à jour le compteur de colis
+      newTour.colisCount = (newTour.colisCount || 0) + colisAdded;
 
-      // Créer le backup si c'est un admin qui importe
-      if (req.user.role === 'ADMIN') {
-        const tourColis = COLIS.filter(c => c.tourId === newTourId);
+      // Créer le backup si c'est un admin qui importe (seulement pour nouvelle tournée)
+      if (req.user.role === 'ADMIN' && !isFusion) {
+        const tourColis = COLIS.filter(c => c.tourId === newTour.id);
         createAdminTourBackup(newTour, tourColis, req.user.role);
         
         // Mémoriser l'association chauffeur → sous-traitant pour les prochains imports
@@ -2846,14 +3281,18 @@ app.post(
       // Sauvegarde
       saveDataToFile();
 
-      log('INFO', 'Tournée importée avec succès', { 
-        tourId: newTourId,
-        colisCount: uniqueColis.length,
-        duplicatesIgnored: duplicates.length + duplicatesInFile.length
+      log('INFO', isFusion ? 'Colis fusionnés avec tournée existante' : 'Tournée importée avec succès', { 
+        tourId: newTour.id,
+        colisAdded: colisAdded,
+        totalColis: newTour.colisCount,
+        duplicatesIgnored: duplicates.length + duplicatesInFile.length,
+        isFusion
       });
 
       // Construire le message de réponse
-      let message = `Tournée créée: ${uniqueColis.length} colis`;
+      let message = isFusion 
+        ? `${colisAdded} colis ajoutés à la tournée existante (total: ${newTour.colisCount})`
+        : `Tournée créée: ${colisAdded} colis`;
       if (duplicates.length > 0 || duplicatesInFile.length > 0) {
         message += ` (${duplicates.length + duplicatesInFile.length} doublons ignorés)`;
       }
@@ -2862,10 +3301,12 @@ app.post(
         status: "ok",
         message: message,
         tour: newTour,
-        colisCount: uniqueColis.length,
+        colisCount: colisAdded,
+        totalColisInTour: newTour.colisCount,
         duplicatesIgnored: duplicates.length,
         duplicatesInFileIgnored: duplicatesInFile.length,
-        autoDispatched: req.body.sousTraitantName !== sousTraitantName // indique si auto-dispatch
+        autoDispatched: req.body.sousTraitantName !== sousTraitantName,
+        isFusion: isFusion
       });
     } catch (e) {
       log('ERROR', 'Erreur import tournée', { error: e.message, stack: e.stack });
@@ -3169,9 +3610,14 @@ function parseExcelColis(filePath) {
 // API SUPPRESSION TOURNÉE
 // ==============================
 app.delete("/api/tours/:id", authMiddleware(["ADMIN", "DISPATCHER"]), (req, res) => {
-  const tourId = parseInt(req.params.id, 10);
+  // Supporter les IDs string (tour-xxx) et numériques
+  let tourId = req.params.id;
+  const numericId = parseInt(tourId, 10);
+  if (!isNaN(numericId) && String(numericId) === tourId) {
+    tourId = numericId;
+  }
   
-  const tourIndex = TOURS.findIndex((t) => t.id === tourId);
+  const tourIndex = TOURS.findIndex((t) => t.id === tourId || String(t.id) === String(tourId));
   if (tourIndex === -1) {
     return res.status(404).json({
       error: "TOUR_NOT_FOUND",
@@ -3200,17 +3646,18 @@ app.delete("/api/tours/:id", authMiddleware(["ADMIN", "DISPATCHER"]), (req, res)
   }
 
   // Supprimer la tournée
+  const actualTourId = tour.id; // Utiliser l'ID réel de la tournée trouvée
   TOURS.splice(tourIndex, 1);
 
   // Supprimer les colis associés
-  const removedColisCount = COLIS.filter((c) => c.tourId === tourId).length;
-  COLIS = COLIS.filter((c) => c.tourId !== tourId);
+  const removedColisCount = COLIS.filter((c) => c.tourId === actualTourId || String(c.tourId) === String(actualTourId)).length;
+  COLIS = COLIS.filter((c) => c.tourId !== actualTourId && String(c.tourId) !== String(actualTourId));
 
   saveDataToFile();
 
   log('INFO', 'Tournée supprimée', { 
-    tourId,
-    tourName: tour.tourneeName,
+    tourId: actualTourId,
+    tourName: tour.tourneeName || tour.name,
     isCaniao: tour.isCaniao,
     deletedBy: req.user.login 
   });
@@ -3781,6 +4228,281 @@ app.get("/api/tracking-patterns/detect/:tracking", authMiddleware(["ADMIN", "DIS
   res.json(result);
 });
 
+// =====================================================
+// DÉTECTION AUTOMATIQUE DU TYPE DE FICHIER
+// =====================================================
+// Analyse un fichier et retourne le type détecté (gofo/caniao) sans l'importer
+app.post("/api/file/detect-type", authMiddleware(["ADMIN", "DISPATCHER"]), upload.single("file"), async (req, res) => {
+  try {
+    const uploaded = req.file;
+    
+    log('INFO', '=== DÉTECTION TYPE FICHIER ===', { 
+      hasFile: !!uploaded, 
+      filename: uploaded?.originalname 
+    });
+    
+    if (!uploaded) {
+      return res.status(400).json({ error: "NO_FILE", message: "Aucun fichier fourni" });
+    }
+    
+    const filename = uploaded.originalname.toLowerCase();
+    const isPDF = filename.endsWith('.pdf');
+    const isExcel = filename.endsWith('.xlsx') || filename.endsWith('.xls');
+    
+    if (!isPDF && !isExcel) {
+      fs.unlinkSync(uploaded.path);
+      return res.status(400).json({ 
+        error: "INVALID_FORMAT", 
+        message: "Format non supporté. Utilisez PDF ou Excel." 
+      });
+    }
+    
+    let trackings = [];
+    let isMultiChauffeur = false;
+    let chauffeurName = null;
+    
+    try {
+      if (isPDF) {
+        // Parser le PDF pour extraire les trackings
+        // D'abord essayer avec pdfplumber
+        try {
+          const colis = await parsePDFWithPython(uploaded.path);
+          trackings = colis.map(c => c.trackingNumber || c.tracking).filter(t => t);
+          log('DEBUG', 'parsePDFWithPython résultat détection', { count: trackings.length });
+        } catch (e) {
+          log('DEBUG', 'parsePDFWithPython échoué', { error: e.message });
+        }
+        
+        // TOUJOURS extraire du texte brut aussi (PDFs Spoke ont les trackings dans Notes)
+        const dataBuffer = fs.readFileSync(uploaded.path);
+        const pdfParse = require("pdf-parse");
+        const pdfData = await pdfParse(dataBuffer);
+        let text = pdfData.text;
+        
+        // Extraire tous les trackings avec regex (16-17 caractères typiques)
+        const trackingRegex = /\b(?:GFFR|DOFR|CNFR|CRFR|SPFR)\d{12,16}\b/gi;
+        const matches = text.match(trackingRegex) || [];
+        
+        // Ajouter les nouveaux trackings uniques (fusion)
+        const existingSet = new Set(trackings.map(t => t.toUpperCase()));
+        for (const match of matches) {
+          const upper = match.toUpperCase();
+          if (!existingSet.has(upper)) {
+            trackings.push(upper);
+            existingSet.add(upper);
+          }
+        }
+        
+        log('DEBUG', 'Trackings extraits (total après fusion)', { 
+          count: trackings.length, 
+          samples: trackings.slice(0, 5) 
+        });
+        
+        // Vérifier si c'est un PDF multi-chauffeurs (présence de plages)
+        const textClean = text.replace(/\s+/g, ' ').trim();
+        
+        // Chercher des patterns de plages
+        const plageRegex = /\(([a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ\-_']*)\s*(\d+)\s*-\s*(\d+)\)/gi;
+        const plageMatches = textClean.match(plageRegex);
+        isMultiChauffeur = plageMatches && plageMatches.length > 0;
+        
+      } else {
+        // Parser l'Excel - utiliser la même logique que l'import normal
+        const XLSX = require('xlsx');
+        const workbook = XLSX.readFile(uploaded.path);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        
+        if (jsonData.length < 2) {
+          fs.unlinkSync(uploaded.path);
+          return res.json({
+            type: 'unknown',
+            confidence: 0,
+            message: "Fichier Excel vide",
+            filename: uploaded.originalname
+          });
+        }
+        
+        // Chercher la colonne tracking avec la même logique que l'import
+        const headers = (jsonData[0] || []).map(h => String(h || '').toLowerCase().trim());
+        log('DEBUG', 'Détection - Headers Excel', { headers, filename: uploaded.originalname });
+        
+        let trackingColIndex = headers.findIndex(h => 
+          h.includes('tracking') || h.includes('numero') || h.includes('numéro') || 
+          h.includes('colis') || h.includes('waybill') || h.includes('code')
+        );
+        
+        // Si pas trouvé par header, chercher la colonne avec des codes tracking
+        if (trackingColIndex === -1) {
+          for (let col = 0; col < Math.min((jsonData[1] || []).length, 15); col++) {
+            const value = String((jsonData[1] || [])[col] || '').trim().toUpperCase();
+            // Pattern plus large pour détecter les trackings
+            if (/^[A-Z]{2,4}[A-Z]{2}\d{5,}/.test(value) || /^[A-Z]{4}\d{10,}/.test(value)) {
+              trackingColIndex = col;
+              log('DEBUG', 'Colonne tracking trouvée par pattern', { col, value });
+              break;
+            }
+          }
+        }
+        
+        log('DEBUG', 'Colonne tracking détectée', { trackingColIndex, filename: uploaded.originalname });
+        
+        // Extraire les trackings
+        for (let i = 1; i < jsonData.length && trackings.length < 50; i++) {
+          const row = jsonData[i] || [];
+          
+          if (trackingColIndex >= 0 && row[trackingColIndex]) {
+            const value = String(row[trackingColIndex]).trim().toUpperCase();
+            if (value.length > 5) {
+              trackings.push(value);
+            }
+          } else {
+            // Chercher dans toute la ligne
+            for (const cell of row) {
+              const value = String(cell || '').trim().toUpperCase();
+              if (value.length > 10 && /^[A-Z]{2,4}/.test(value)) {
+                trackings.push(value);
+                break;
+              }
+            }
+          }
+        }
+        
+        log('DEBUG', 'Trackings extraits pour détection', { 
+          count: trackings.length, 
+          samples: trackings.slice(0, 3),
+          filename: uploaded.originalname 
+        });
+        
+        // Extraire le nom du chauffeur du nom de fichier
+        const filenameWithoutExt = uploaded.originalname.replace(/\.(xlsx|xls|pdf)$/i, '');
+        const nameMatch = filenameWithoutExt.match(/^([a-zA-ZÀ-ÿ\-_']+)/i);
+        if (nameMatch) {
+          chauffeurName = nameMatch[1].replace(/[_-]/g, ' ').trim();
+          chauffeurName = chauffeurName.charAt(0).toUpperCase() + chauffeurName.slice(1).toLowerCase();
+        }
+      }
+    } catch (parseError) {
+      log('ERROR', 'Erreur parsing fichier pour détection', { error: parseError.message });
+    }
+    
+    // Nettoyer le fichier temporaire
+    fs.unlinkSync(uploaded.path);
+    
+    if (trackings.length === 0) {
+      return res.json({
+        type: 'unknown',
+        confidence: 0,
+        message: "Impossible d'extraire les numéros de tracking",
+        filename: uploaded.originalname,
+        isMultiChauffeur,
+        chauffeurName
+      });
+    }
+    
+    // Analyser les trackings pour déterminer le type
+    let gofoCount = 0;
+    let caniaoCount = 0;
+    let unknownCount = 0;
+    const unknownPrefixes = new Set();
+    
+    log('DEBUG', 'Analyse des trackings pour détection de type', { 
+      trackingsCount: trackings.length, 
+      samples: trackings.slice(0, 5),
+      patterns: TRACKING_PATTERNS.prefixes.map(p => `${p.prefix}→${p.type}`)
+    });
+    
+    for (const tracking of trackings) {
+      const detected = detectTrackingType(tracking);
+      if (detected.type === 'gofo') {
+        gofoCount++;
+      } else if (detected.type === 'caniao') {
+        caniaoCount++;
+      } else {
+        unknownCount++;
+        if (detected.prefix) {
+          unknownPrefixes.add(detected.prefix);
+        }
+      }
+    }
+    
+    log('INFO', 'Résultat détection type fichier', { 
+      filename: uploaded.originalname,
+      gofoCount, 
+      caniaoCount, 
+      unknownCount,
+      unknownPrefixes: Array.from(unknownPrefixes)
+    });
+    
+    // Déterminer le type - avec support des fichiers mutualisés
+    let detectedType = 'unknown';
+    let confidence = 0;
+    
+    const total = gofoCount + caniaoCount + unknownCount;
+    const gofoPercent = total > 0 ? (gofoCount / total) * 100 : 0;
+    const caniaoPercent = total > 0 ? (caniaoCount / total) * 100 : 0;
+    
+    // Seuils de détection
+    const PURE_THRESHOLD = 80;      // ≥80% = type pur (gofo ou caniao)
+    const MIX_THRESHOLD = 20;       // ≥20% de chaque = mutualisé
+    
+    if (gofoPercent >= PURE_THRESHOLD) {
+      // Fichier principalement Gofo
+      detectedType = 'gofo';
+      confidence = Math.round(gofoPercent);
+    } else if (caniaoPercent >= PURE_THRESHOLD) {
+      // Fichier principalement Cainiao
+      detectedType = 'caniao';
+      confidence = Math.round(caniaoPercent);
+    } else if (gofoPercent >= MIX_THRESHOLD && caniaoPercent >= MIX_THRESHOLD) {
+      // Fichier mutualisé (mix significatif des deux)
+      detectedType = 'mutualized';
+      confidence = Math.round(gofoPercent + caniaoPercent); // Confiance = % de trackings reconnus
+      log('INFO', 'Fichier MUTUALISÉ détecté', {
+        filename: uploaded.originalname,
+        gofoPercent: Math.round(gofoPercent),
+        caniaoPercent: Math.round(caniaoPercent),
+        gofoCount,
+        caniaoCount
+      });
+    } else if (gofoCount > caniaoCount && gofoCount > unknownCount) {
+      detectedType = 'gofo';
+      confidence = Math.round(gofoPercent);
+    } else if (caniaoCount > gofoCount && caniaoCount > unknownCount) {
+      detectedType = 'caniao';
+      confidence = Math.round(caniaoPercent);
+    }
+    
+    res.json({
+      type: detectedType,
+      confidence,
+      stats: {
+        gofo: gofoCount,
+        caniao: caniaoCount,
+        unknown: unknownCount,
+        total,
+        gofoPercent: Math.round(gofoPercent),
+        caniaoPercent: Math.round(caniaoPercent)
+      },
+      unknownPrefixes: Array.from(unknownPrefixes),
+      filename: uploaded.originalname,
+      isPDF,
+      isExcel,
+      isMultiChauffeur,
+      chauffeurName,
+      sampleTrackings: trackings.slice(0, 3)
+    });
+    
+  } catch (err) {
+    log('ERROR', 'Erreur détection type fichier', { error: err.message });
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: "DETECTION_ERROR", message: err.message });
+  }
+});
+
 // API pour rafraîchir les sous-traitants des tournées existantes
 // Parcourt toutes les tournées et met à jour le sousTraitantName basé sur chauffeurs.json
 app.post("/api/tours/refresh-sous-traitants", requireAdmin, (req, res) => {
@@ -4082,10 +4804,15 @@ app.get("/api/dispatcher/tours", authMiddleware(["DISPATCHER"]), (req, res) => {
 
 // Détail d'une tournée du dispatcher
 app.get("/api/dispatcher/tours/:id", authMiddleware(["DISPATCHER"]), (req, res) => {
-  const tourId = parseInt(req.params.id, 10);
+  // Supporter les IDs string et numériques
+  let tourId = req.params.id;
+  const numericId = parseInt(tourId, 10);
+  if (!isNaN(numericId) && String(numericId) === tourId) {
+    tourId = numericId;
+  }
   const user = req.user;
 
-  const tour = TOURS.find((t) => t.id === tourId && t.sousTraitantName === user.sousTraitantName);
+  const tour = TOURS.find((t) => (t.id === tourId || String(t.id) === String(tourId)) && t.sousTraitantName === user.sousTraitantName);
 
   if (!tour) {
     return res.status(404).json({
@@ -4094,7 +4821,7 @@ app.get("/api/dispatcher/tours/:id", authMiddleware(["DISPATCHER"]), (req, res) 
     });
   }
 
-  const colis = COLIS.filter((c) => c.tourId === tourId);
+  const colis = COLIS.filter((c) => c.tourId === tour.id || String(c.tourId) === String(tour.id));
 
   res.json({
     tour,
@@ -4105,7 +4832,12 @@ app.get("/api/dispatcher/tours/:id", authMiddleware(["DISPATCHER"]), (req, res) 
 
 // Téléchargement de tournée au format Excel (Dispatcher et Admin)
 app.get("/api/dispatcher/tours/:id/download", (req, res) => {
-  const tourId = parseInt(req.params.id, 10);
+  // Supporter les IDs string et numériques
+  let tourId = req.params.id;
+  const numericId = parseInt(tourId, 10);
+  if (!isNaN(numericId) && String(numericId) === tourId) {
+    tourId = numericId;
+  }
   console.log("USERS au début:", USERS.length, "utilisateurs");
   // Récupérer le token depuis Authorization ou query, puis nettoyer
   let token = null;
@@ -4188,7 +4920,7 @@ app.get("/api/dispatcher/tours/:id/download", (req, res) => {
   }
 
   // Trouver la tournée
-  const tour = TOURS.find((t) => t.id === tourId);
+  const tour = TOURS.find((t) => t.id === tourId || String(t.id) === String(tourId));
   if (!tour) {
     return res.status(404).json({
       error: "TOUR_NOT_FOUND",
@@ -4216,14 +4948,14 @@ app.get("/api/dispatcher/tours/:id/download", (req, res) => {
   }
 
   // Récupérer les colis de la tournée
-  const colis = COLIS.filter((c) => c.tourId === tourId);
+  const colis = COLIS.filter((c) => c.tourId === tour.id || String(c.tourId) === String(tour.id));
 
   // Créer le fichier Excel
   const workbook = XLSX.utils.book_new();
   
   // Préparer les données pour Excel (format avec Tracking, City, Address)
   const excelData = colis.map((c, index) => {
-    const tracking = (c.trackingNumber || c.code || "").replace(/;$/, ''); // Retirer le point-virgule final
+    const tracking = (c.trackingNumber || c.tracking || c.code || "").replace(/;$/, ''); // Retirer le point-virgule final
     const orderNum = c.orderNumber || (index + 1);
     const address = c.address || "";
     const city = c.city || "";
@@ -4636,20 +5368,22 @@ app.post("/api/dispatcher/tours/import", authMiddleware(["DISPATCHER"]), upload.
 // SUPPRESSION TOURNÉE DISPATCHER
 // ==============================
 app.delete("/api/dispatcher/tours/:id", authMiddleware(["DISPATCHER"]), (req, res) => {
-  const tourId = parseInt(req.params.id, 10);
+  // Supporter les IDs string et numériques
+  let tourId = req.params.id;
+  const numericId = parseInt(tourId, 10);
+  if (!isNaN(numericId) && String(numericId) === tourId) {
+    tourId = numericId;
+  }
   const user = req.user;
 
-  if (isNaN(tourId)) {
-    return res.status(400).json({ error: "ID invalide" });
-  }
-
   // Trouver la tournée
-  const tourIndex = TOURS.findIndex((t) => t.id === tourId);
+  const tourIndex = TOURS.findIndex((t) => t.id === tourId || String(t.id) === String(tourId));
   if (tourIndex === -1) {
     return res.status(404).json({ error: "Tournée non trouvée" });
   }
 
   const tour = TOURS[tourIndex];
+  const actualTourId = tour.id;
 
   // Vérifier que la tournée appartient au sous-traitant du dispatcher
   if (tour.sousTraitantName !== user.sousTraitantName) {
@@ -4661,7 +5395,7 @@ app.delete("/api/dispatcher/tours/:id", authMiddleware(["DISPATCHER"]), (req, re
 
   // Supprimer les colis associés
   const colisCountBefore = COLIS.length;
-  COLIS = COLIS.filter((c) => c.tourId !== tourId);
+  COLIS = COLIS.filter((c) => c.tourId !== actualTourId && String(c.tourId) !== String(actualTourId));
   const removedColisCount = colisCountBefore - COLIS.length;
 
   // Supprimer la tournée
@@ -4671,7 +5405,7 @@ app.delete("/api/dispatcher/tours/:id", authMiddleware(["DISPATCHER"]), (req, re
 
   log('INFO', 'Dispatcher: tournée supprimée', { 
     dispatcher: user.login,
-    tourId,
+    tourId: actualTourId,
     removedColis: removedColisCount 
   });
 
