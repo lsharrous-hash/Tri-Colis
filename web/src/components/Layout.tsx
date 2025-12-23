@@ -40,8 +40,10 @@ export function Layout({ children }: LayoutProps) {
           <Link to="/" className="ghost-btn">
             Tableau de bord
           </Link>
-          <Link to="/tours-import" className="ghost-btn">
-            Tournées & Import
+          <Link to="/import-unifie" className="ghost-btn" style={{
+            background: location.pathname === '/import-unifie' ? 'rgba(124, 58, 237, 0.2)' : undefined
+          }}>
+            📦 Import & Tournées
           </Link>
           {/* Rapport de tri uniquement pour ADMIN */}
           {user?.role === 'ADMIN' && (

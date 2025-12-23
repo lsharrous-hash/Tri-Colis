@@ -4,6 +4,7 @@ import { Users } from './pages/Users'
 import { ToursImport } from './pages/ToursImport'
 import { Tours } from './pages/Tours'
 import { Import } from './pages/Import'
+import { ImportUnifie } from './pages/ImportUnifie'
 import { ScanReport } from './pages/ScanReport'
 import { Login } from './pages/Login'
 import { Layout } from './components/Layout'
@@ -42,6 +43,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <ToursImport />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/import-unifie"
+            element={
+              <ProtectedRoute>
+                <ImportUnifie />
               </ProtectedRoute>
             }
           />

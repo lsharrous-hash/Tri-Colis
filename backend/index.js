@@ -9,6 +9,7 @@ const { execSync, exec } = require("child_process");
 const bcrypt = require("bcryptjs");
 const XLSX = require("xlsx");
 const crypto = require('crypto');
+const importRoutes = require('./routes_import');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1095,6 +1096,19 @@ loadDataFromFile();
 loadSessionsFromFile();
 loadChauffeursFromFile(); // Mapping chauffeur → sous-traitant
 loadTrackingPatterns(); // Patterns de tracking (préfixes Gofo/Cainiao)
+
+// Initialiser les routes d'import unifié avec les données globales (après chargement USERS)
+importRoutes.initializeData(
+    COLIS, 
+    TOURS, 
+    () => NEXT_COLIS_ID,
+    (val) => { NEXT_COLIS_ID = val; },
+    () => NEXT_TOUR_ID,
+    (val) => { NEXT_TOUR_ID = val; },
+    saveDataToFile,
+    USERS
+);
+app.use('/api', importRoutes);
 
 // ==============================
 // Synchronisation automatique des sous-traitants
