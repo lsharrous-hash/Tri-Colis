@@ -9,6 +9,8 @@ const { execSync, exec } = require("child_process");
 const bcrypt = require("bcryptjs");
 const XLSX = require("xlsx");
 const crypto = require('crypto');
+
+// Import des routes unifiées
 const importRoutes = require('./routes_import');
 
 const app = express();
@@ -590,6 +592,18 @@ let CHAUFFEURS_MAPPING = { chauffeurs: [], sousTraitants: [] };
 // Charger les données au démarrage
 loadDataFromFile();
 
+// Initialiser les routes d'import unifié avec les données globales
+importRoutes.initializeData(
+    COLIS, 
+    TOURS, 
+    () => NEXT_COLIS_ID,
+    (val) => { NEXT_COLIS_ID = val; },
+    () => NEXT_TOUR_ID,
+    (val) => { NEXT_TOUR_ID = val; },
+    saveDataToFile
+);
+app.use('/api', importRoutes);
+
 let USERS = [];
 let SESSIONS = {};
 
@@ -1092,23 +1106,10 @@ function requireAdmin(req, res, next) {
 // Initialisation
 // ==============================
 loadUsersFromFile();
-loadDataFromFile();
+// loadDataFromFile(); // SUPPRIMÉ - déjà appelé plus haut avant initializeData (ligne 593)
 loadSessionsFromFile();
 loadChauffeursFromFile(); // Mapping chauffeur → sous-traitant
 loadTrackingPatterns(); // Patterns de tracking (préfixes Gofo/Cainiao)
-
-// Initialiser les routes d'import unifié avec les données globales (après chargement USERS)
-importRoutes.initializeData(
-    COLIS, 
-    TOURS, 
-    () => NEXT_COLIS_ID,
-    (val) => { NEXT_COLIS_ID = val; },
-    () => NEXT_TOUR_ID,
-    (val) => { NEXT_TOUR_ID = val; },
-    saveDataToFile,
-    USERS
-);
-app.use('/api', importRoutes);
 
 // ==============================
 // Synchronisation automatique des sous-traitants
@@ -5986,6 +5987,96 @@ app.delete("/api/dispatcher/tour/:driverName", authMiddleware(["ADMIN", "DISPATC
   } catch (err) {
     console.error('Erreur suppression tournée dispatcher:', err);
     log('ERROR', 'Erreur suppression tournée dispatcher', { error: err.message });
+    res.status(500).json({ error: "INTERNAL_ERROR", message: "Erreur serveur" });
+  }
+});
+
+// ==============================
+// API ADMIN - Supprimer TOUTES les tournées d'une date
+// ==============================
+app.delete("/api/admin/tours/all", authMiddleware(["ADMIN"]), (req, res) => {
+  try {
+    const { date } = req.query;
+    
+    if (!date) {
+      return res.status(400).json({ error: "MISSING_DATE", message: "Date requise" });
+    }
+    
+    console.log('=== DELETE ALL TOURS (ADMIN) ===');
+    console.log('Date demandée:', date, 'User:', req.user.login);
+    
+    // DEBUG: Compter les colis et tours pour cette date
+    const colisForDate = COLIS.filter(c => c.date === date);
+    const toursForDate = TOURS.filter(t => t.date === date);
+    console.log(`Colis trouvés: ${colisForDate.length}, Tours trouvés: ${toursForDate.length}`);
+    
+    if (colisForDate.length === 0 && toursForDate.length === 0) {
+      console.log('RIEN À SUPPRIMER pour cette date');
+      return res.json({ 
+        success: true, 
+        message: "Aucune donnée à supprimer pour cette date",
+        deletedTours: 0,
+        deletedColis: 0
+      });
+    }
+    
+    // Mémoriser l'association colis → chauffeur avant suppression
+    let memorizedCount = 0;
+    for (const colis of colisForDate) {
+      if (colis.trackingNumber) {
+        ORIGINAL_COLIS_MAPPING[colis.trackingNumber.toUpperCase()] = {
+          chauffeur: colis.chauffeurName,
+          sousTraitant: colis.sousTraitantName,
+          address: colis.address,
+          tourType: colis.type || 'unknown',
+          memorizedAt: new Date().toISOString()
+        };
+        memorizedCount++;
+      }
+    }
+    
+    // 1. Supprimer TOUS les colis de cette date (directement, sans passer par les tours)
+    let deletedColis = 0;
+    for (let i = COLIS.length - 1; i >= 0; i--) {
+      if (COLIS[i].date === date) {
+        COLIS.splice(i, 1);
+        deletedColis++;
+      }
+    }
+    
+    // 2. Supprimer TOUTES les tournées de cette date
+    let deletedTours = 0;
+    for (let i = TOURS.length - 1; i >= 0; i--) {
+      if (TOURS[i].date === date) {
+        TOURS.splice(i, 1);
+        deletedTours++;
+      }
+    }
+    
+    console.log(`SUPPRIMÉ: ${deletedColis} colis, ${deletedTours} tournées`);
+    
+    log('INFO', 'Suppression toutes tournées (admin)', { 
+      date, 
+      deletedTours, 
+      deletedColis,
+      memorizedColis: memorizedCount,
+      user: req.user.login
+    });
+    
+    // IMPORTANT: Sauvegarder les données après suppression
+    saveDataToFile();
+    
+    res.json({
+      success: true,
+      message: `${deletedTours} tournée(s) et ${deletedColis} colis supprimés pour le ${date}`,
+      deletedTours,
+      deletedColis,
+      memorizedColis: memorizedCount
+    });
+    
+  } catch (err) {
+    console.error('Erreur suppression toutes tournées:', err);
+    log('ERROR', 'Erreur suppression toutes tournées', { error: err.message });
     res.status(500).json({ error: "INTERNAL_ERROR", message: "Erreur serveur" });
   }
 });

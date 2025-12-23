@@ -250,7 +250,10 @@ export interface ChauffeursDateSummary {
 }
 
 export async function getChauffeursSummary(date: string): Promise<ChauffeursDateSummary> {
-  const { data } = await api.get<ChauffeursDateSummary>(`/api/chauffeurs/summary/${date}`)
+  // Ajouter un timestamp pour éviter le cache du navigateur
+  const { data } = await api.get<ChauffeursDateSummary>(`/api/chauffeurs/summary/${date}`, {
+    params: { _t: Date.now() }
+  })
   return data
 }
 
@@ -288,4 +291,7 @@ export async function addSousTraitant(name: string) {
   return data
 }
 
-
+export async function deleteAllTours(date: string) {
+  const { data } = await api.delete('/api/admin/tours/all', { params: { date } })
+  return data
+}

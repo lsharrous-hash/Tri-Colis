@@ -155,6 +155,12 @@
       "normalized": "vaxthang",
       "sousTraitant": "Transport VALS",
       "createdAt": "2025-12-23T00:19:16.745Z"
+    },
+    {
+      "name": "Ayoubc",
+      "normalized": "ayoubc",
+      "sousTraitant": "D Transport",
+      "createdAt": "2025-12-23T01:52:27.362Z"
     }
   ],
   "sousTraitants": [

@@ -7,6 +7,7 @@ import {
   getSousTraitants,
   addSousTraitant,
   getExistingChauffeurs,
+  deleteAllTours,
   ImportUnifiedResponse,
   UnknownChauffeur,
   ChauffeurSummary,
@@ -75,11 +76,13 @@ export function ImportUnifie() {
     enabled: false, // On fetch manuellement quand on en a besoin
   })
   
-  // Query pour le résumé par date
+  // Query pour le résumé par date (sans cache pour toujours avoir les données à jour)
   const { data: summaryData, isLoading: summaryLoading } = useQuery({
     queryKey: ['chauffeurs-summary', date],
     queryFn: () => getChauffeursSummary(date),
     enabled: !!date,
+    staleTime: 0,  // Toujours considérer les données comme périmées
+    gcTime: 0,     // Ne pas garder en cache (anciennement cacheTime)
   })
   
   // Mutation pour ajouter un sous-traitant
@@ -115,6 +118,47 @@ export function ImportUnifie() {
   const handleDeleteChauffeur = (chauffeur: string) => {
     if (confirm(`Supprimer tous les colis de ${chauffeur} pour le ${date} ?`)) {
       deleteChauffeurMutation.mutate({ chauffeur, date })
+    }
+  }
+  
+  // Mutation pour supprimer TOUTES les tournées d'une date
+  const deleteAllToursMutation = useMutation({
+    mutationFn: async (date: string) => {
+      return await deleteAllTours(date)
+    },
+    onSuccess: (data) => {
+      alert(`✅ ${data.deletedTours} tournée(s) et ${data.deletedColis} colis supprimés`)
+      
+      // Forcer le rechargement complet de la page pour rafraîchir les données
+      window.location.reload()
+    },
+    onError: (err: any) => {
+      const msg = err?.response?.data?.message || err?.message || 'Erreur de suppression'
+      alert(`Erreur: ${msg}`)
+    },
+  })
+  
+  // Handler suppression toutes les tournées
+  const handleDeleteAllTours = () => {
+    const total = summaryData?.totals?.total || 0
+    const nbChauffeurs = summaryData?.chauffeurs?.length || 0
+    
+    if (total === 0) {
+      alert('Aucune tournée à supprimer pour cette date.')
+      return
+    }
+    
+    const confirmation = prompt(
+      `⚠️ ATTENTION: Cette action va supprimer TOUTES les tournées du ${date}:\n\n` +
+      `• ${nbChauffeurs} chauffeur(s)\n` +
+      `• ${total} colis au total\n\n` +
+      `Pour confirmer, tapez "SUPPRIMER" en majuscules:`
+    )
+    
+    if (confirmation === 'SUPPRIMER') {
+      deleteAllToursMutation.mutate(date)
+    } else if (confirmation !== null) {
+      alert('Suppression annulée. Vous devez taper exactement "SUPPRIMER".')
     }
   }
   
@@ -681,15 +725,36 @@ export function ImportUnifie() {
       
       {/* Vue mutualisée - 3 tableaux */}
       <div className="surface">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <p className="card-title">📊 Vue par chauffeur - {date}</p>
-          {summaryData?.totals && (
-            <div style={{ display: 'flex', gap: 16, fontSize: 14 }}>
-              <span style={{ color: '#f59e0b' }}>🟡 Gofo: {summaryData.totals.gofo}</span>
-              <span style={{ color: '#3b82f6' }}>🔵 Cainiao: {summaryData.totals.cainiao}</span>
-              <span style={{ fontWeight: 'bold' }}>Total: {summaryData.totals.total}</span>
-            </div>
-          )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+          <p className="card-title" style={{ margin: 0 }}>📊 Vue par chauffeur - {date}</p>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', fontSize: 14 }}>
+            {summaryData?.totals && (
+              <>
+                <span style={{ color: '#f59e0b' }}>🟡 Gofo: {summaryData.totals.gofo}</span>
+                <span style={{ color: '#3b82f6' }}>🔵 Cainiao: {summaryData.totals.cainiao}</span>
+                <span style={{ fontWeight: 'bold' }}>Total: {summaryData.totals.total}</span>
+                <span style={{ color: '#444' }}>|</span>
+              </>
+            )}
+            <button
+              onClick={handleDeleteAllTours}
+              disabled={deleteAllToursMutation.isPending || !summaryData?.chauffeurs?.length}
+              style={{
+                padding: '6px 12px',
+                fontSize: 12,
+                background: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid #ef4444',
+                borderRadius: 6,
+                color: '#ef4444',
+                cursor: summaryData?.chauffeurs?.length ? 'pointer' : 'not-allowed',
+                opacity: summaryData?.chauffeurs?.length ? 1 : 0.5,
+                fontWeight: 500,
+              }}
+              title="Supprimer toutes les tournées de cette date"
+            >
+              🗑️ Supprimer tout
+            </button>
+          </div>
         </div>
         
         {summaryLoading ? (
