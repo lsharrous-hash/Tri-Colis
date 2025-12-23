@@ -314,8 +314,9 @@ def extract_chauffeur_plages(header_text):
     plages = []
     seen = set()
     
-    # Pattern: (NOM début-fin) - espace optionnel entre nom et chiffres
-    matches = re.findall(r'\(([A-Za-zÀ-ÿ]+)\s*(\d+)-(\d+)\)', header_text)
+    # Pattern amélioré: ( NOM début-fin) ou (NOM début fin)
+    # Gère: espace après (, espace ou tiret entre les chiffres
+    matches = re.findall(r'\(\s*([A-Za-zÀ-ÿ]+)\s*(\d+)[\s\-]+(\d+)\s*\)', header_text)
     for match in matches:
         name = match[0].strip()
         start = int(match[1])
@@ -327,8 +328,9 @@ def extract_chauffeur_plages(header_text):
             name_normalized = name[0].upper() + name[1:].lower()
             plages.append({"name": name_normalized, "start": start, "end": end})
     
+    # Pattern alternatif: NOM (début-fin) ou NOM ( début - fin )
     if not plages:
-        matches = re.findall(r'([A-Za-zÀ-ÿ]+)\s*\(\s*(\d+)\s*-\s*(\d+)\s*\)', header_text)
+        matches = re.findall(r'([A-Za-zÀ-ÿ]+)\s*\(\s*(\d+)\s*[\s\-]+\s*(\d+)\s*\)', header_text)
         for match in matches:
             name = match[0].strip()
             start = int(match[1])

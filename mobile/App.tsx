@@ -81,7 +81,6 @@ type Screen =
   | "DISPATCHER_TOURS"
   | "ADMIN_HOME"
   | "ADMIN_IMPORT_UNIFIE"
-  | "ADMIN_TOURS"
   | "ADMIN_USERS"
   | "PROFILE";
 
@@ -371,7 +370,6 @@ export default function App() {
         <AdminHomeScreen
           onBack={() => setScreen("ROLE_HOME")}
           onGoToImport={() => setScreen("ADMIN_IMPORT_UNIFIE")}
-          onGoToTours={() => setScreen("ADMIN_TOURS")}
           onGoToUsers={() => setScreen("ADMIN_USERS")}
         />
       </SafeAreaView>
@@ -382,17 +380,6 @@ export default function App() {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.Colors.bg }}>
         <AdminImportUnifieScreen
-          onBack={() => setScreen("ADMIN_HOME")}
-          authToken={authToken}
-        />
-      </SafeAreaView>
-    );
-  }
-
-  if (screen === "ADMIN_TOURS") {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: theme.Colors.bg }}>
-        <AdminToursScreen
           onBack={() => setScreen("ADMIN_HOME")}
           authToken={authToken}
         />
@@ -2384,11 +2371,10 @@ function ChauffeurCard({ chauffeur, onDelete }: { chauffeur: ChauffeurSummary; o
 type AdminHomeProps = {
   onBack: () => void;
   onGoToImport: () => void;
-  onGoToTours: () => void;
   onGoToUsers: () => void;
 };
 
-function AdminHomeScreen({ onBack, onGoToImport, onGoToTours, onGoToUsers }: AdminHomeProps) {
+function AdminHomeScreen({ onBack, onGoToImport, onGoToUsers }: AdminHomeProps) {
   // Gestion du bouton retour Android
   useEffect(() => {
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -2408,9 +2394,6 @@ function AdminHomeScreen({ onBack, onGoToImport, onGoToTours, onGoToUsers }: Adm
           onPress={onGoToImport} 
           style={{ backgroundColor: '#22c55e' }}
         />
-      </View>
-      <View style={{ marginBottom: 16 }}>
-        <AppButton title="📋 Anciennes tournées" onPress={onGoToTours} />
       </View>
       <View style={{ marginBottom: 16 }}>
         <AppButton title="👤 Gestion des utilisateurs" onPress={onGoToUsers} />
