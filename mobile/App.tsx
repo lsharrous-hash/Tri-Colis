@@ -80,13 +80,14 @@ type Screen =
   | "DISPATCHER_IMPORT"
   | "DISPATCHER_TOURS"
   | "ADMIN_HOME"
+  | "ADMIN_IMPORT_UNIFIE"
   | "ADMIN_TOURS"
   | "ADMIN_USERS"
   | "PROFILE";
 
 // ===== MODE DEV / PROD =====
 // Mettre true pour tester en local, false pour la production
-const DEV_MODE = false;
+const DEV_MODE = true;
 const API_BASE_URL = DEV_MODE ? "http://192.168.1.85:3000" : "https://trizee.onrender.com";
 
 interface BackendColis {
@@ -369,8 +370,20 @@ export default function App() {
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.Colors.bg }}>
         <AdminHomeScreen
           onBack={() => setScreen("ROLE_HOME")}
+          onGoToImport={() => setScreen("ADMIN_IMPORT_UNIFIE")}
           onGoToTours={() => setScreen("ADMIN_TOURS")}
           onGoToUsers={() => setScreen("ADMIN_USERS")}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  if (screen === "ADMIN_IMPORT_UNIFIE") {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: theme.Colors.bg }}>
+        <AdminImportUnifieScreen
+          onBack={() => setScreen("ADMIN_HOME")}
+          authToken={authToken}
         />
       </SafeAreaView>
     );
@@ -1686,16 +1699,696 @@ function DispatcherImportScreen({
 
 
 // ===============
+// ADMIN_IMPORT_UNIFIE
+// ===============
+
+interface ChauffeurSummary {
+  chauffeur: string;
+  sousTraitant: string;
+  gofo: { count: number };
+  cainiao: { count: number };
+  total: number;
+}
+
+interface UnknownChauffeur {
+  name: string;
+  colisCount: number;
+  stats: { gofo: number; cainiao: number };
+}
+
+interface AdminImportUnifieProps {
+  onBack: () => void;
+  authToken: string | null;
+}
+
+function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) {
+  const [date, setDate] = useState<string>(getTodayDateString());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [internalDate, setInternalDate] = useState<Date>(parseDateString(getTodayDateString()));
+  
+  // État des fichiers
+  const [files, setFiles] = useState<DocumentPicker.DocumentPickerAsset[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  
+  // Résumé des chauffeurs
+  const [summary, setSummary] = useState<ChauffeurSummary[]>([]);
+  const [totals, setTotals] = useState({ gofo: 0, cainiao: 0, total: 0 });
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  
+  // Modal chauffeurs inconnus
+  const [showUnknownModal, setShowUnknownModal] = useState(false);
+  const [unknownChauffeurs, setUnknownChauffeurs] = useState<UnknownChauffeur[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<DocumentPicker.DocumentPickerAsset[]>([]);
+  const [assignments, setAssignments] = useState<Record<string, string>>({});
+  const [availableST, setAvailableST] = useState<string[]>([]);
+  
+  // Messages
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Charger le résumé au changement de date
+  useEffect(() => {
+    loadSummary();
+  }, [date]);
+
+  // Gestion du bouton retour Android
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (showUnknownModal) {
+        setShowUnknownModal(false);
+        return true;
+      }
+      onBack();
+      return true;
+    });
+    return () => backHandler.remove();
+  }, [onBack, showUnknownModal]);
+
+  const onDateChange = (_event: any, selected?: Date) => {
+    setShowDatePicker(false);
+    if (selected) {
+      setInternalDate(selected);
+      const year = selected.getFullYear();
+      const month = String(selected.getMonth() + 1).padStart(2, "0");
+      const day = String(selected.getDate()).padStart(2, "0");
+      setDate(`${year}-${month}-${day}`);
+    }
+  };
+
+  const loadSummary = async () => {
+    if (!authToken || !date) return;
+    
+    setLoadingSummary(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/chauffeurs/summary/${date}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setSummary(data.chauffeurs || []);
+        setTotals(data.totals || { gofo: 0, cainiao: 0, total: 0 });
+      }
+    } catch (e) {
+      console.error("Erreur chargement summary:", e);
+    } finally {
+      setLoadingSummary(false);
+    }
+  };
+
+  const pickFiles = async () => {
+    setMessage(null);
+    setError(null);
+    
+    const result = await DocumentPicker.getDocumentAsync({
+      type: [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+      ],
+      multiple: true,
+      copyToCacheDirectory: true,
+    });
+
+    if (result.canceled) return;
+    
+    setFiles(prev => [...prev, ...result.assets]);
+  };
+
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const importFiles = async () => {
+    if (!authToken || files.length === 0) {
+      setError("Sélectionnez au moins un fichier");
+      return;
+    }
+
+    setImporting(true);
+    setImportProgress({ current: 0, total: files.length });
+    setMessage(null);
+    setError(null);
+
+    let successCount = 0;
+    let totalColis = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setImportProgress({ current: i + 1, total: files.length });
+
+      try {
+        const formData = new FormData();
+        formData.append("date", date);
+        formData.append("file", {
+          uri: file.uri,
+          name: file.name ?? "import.xlsx",
+          type: file.mimeType ?? "application/octet-stream",
+        } as any);
+
+        const res = await fetch(`${API_BASE_URL}/api/import/unified`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: formData,
+        });
+
+        const data = await res.json();
+
+        if (res.ok) {
+          successCount++;
+          totalColis += data.totalImported || 0;
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } else if (data.error === "UNKNOWN_CHAUFFEURS") {
+          // Chauffeurs inconnus - ouvrir le modal
+          setUnknownChauffeurs(data.unknownChauffeurs || []);
+          setAvailableST(data.sousTraitants || []);
+          setPendingFiles([file]);
+          setShowUnknownModal(true);
+          setImporting(false);
+          return;
+        } else {
+          console.error("Erreur import:", data.message);
+        }
+      } catch (e) {
+        console.error("Erreur import fichier:", e);
+      }
+    }
+
+    setImporting(false);
+    setFiles([]);
+    
+    if (successCount > 0) {
+      setMessage(`✅ ${successCount} fichier(s) importé(s) - ${totalColis} colis`);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      loadSummary();
+    } else {
+      setError("Aucun fichier importé");
+    }
+  };
+
+  const handleAssignAndRetry = async () => {
+    if (!authToken || pendingFiles.length === 0) return;
+
+    // Vérifier que tous les chauffeurs sont assignés
+    for (const ch of unknownChauffeurs) {
+      if (!assignments[ch.name]) {
+        Alert.alert("Erreur", `Assignez un sous-traitant pour ${ch.name}`);
+        return;
+      }
+    }
+
+    setShowUnknownModal(false);
+    setImporting(true);
+
+    try {
+      const file = pendingFiles[0];
+      const formData = new FormData();
+      formData.append("date", date);
+      formData.append("chauffeurAssignments", JSON.stringify(assignments));
+      formData.append("file", {
+        uri: file.uri,
+        name: file.name ?? "import.xlsx",
+        type: file.mimeType ?? "application/octet-stream",
+      } as any);
+
+      const res = await fetch(`${API_BASE_URL}/api/import/unified`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        setMessage(`✅ Import réussi - ${data.totalImported || 0} colis`);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        loadSummary();
+      } else {
+        setError(data.message || "Erreur import");
+      }
+    } catch (e) {
+      setError("Erreur réseau");
+    } finally {
+      setImporting(false);
+      setPendingFiles([]);
+      setAssignments({});
+      setFiles([]);
+    }
+  };
+
+  const deleteAllTours = async () => {
+    Alert.alert(
+      "⚠️ Supprimer tout",
+      `Supprimer TOUTES les tournées du ${formatDateToFrench(date)} ?`,
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Supprimer",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const res = await fetch(
+                `${API_BASE_URL}/api/admin/tours/all?date=${date}`,
+                {
+                  method: "DELETE",
+                  headers: { Authorization: `Bearer ${authToken}` },
+                }
+              );
+              
+              if (res.ok) {
+                const data = await res.json();
+                setMessage(`✅ ${data.deletedColis} colis supprimés`);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                loadSummary();
+              } else {
+                setError("Erreur suppression");
+              }
+            } catch (e) {
+              setError("Erreur réseau");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const deleteChauffeur = async (chauffeurName: string) => {
+    Alert.alert(
+      "Supprimer",
+      `Supprimer les tournées de ${chauffeurName} ?`,
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Supprimer",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const res = await fetch(
+                `${API_BASE_URL}/api/import/chauffeur/${encodeURIComponent(chauffeurName)}?date=${date}`,
+                {
+                  method: "DELETE",
+                  headers: { Authorization: `Bearer ${authToken}` },
+                }
+              );
+              
+              if (res.ok) {
+                setMessage(`✅ Tournées de ${chauffeurName} supprimées`);
+                loadSummary();
+              }
+            } catch (e) {
+              setError("Erreur réseau");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Séparer les chauffeurs par type
+  const mutualized = summary.filter(ch => ch.gofo.count > 0 && ch.cainiao.count > 0);
+  const gofoOnly = summary.filter(ch => ch.gofo.count > 0 && ch.cainiao.count === 0);
+  const caniaoOnly = summary.filter(ch => ch.gofo.count === 0 && ch.cainiao.count > 0);
+
+  return (
+    <View style={styles.container}>
+      <ScrollView contentContainerStyle={{ padding: 16 }}>
+        {/* Header */}
+        <Text style={[styles.title, { marginBottom: 8 }]}>🚀 Import & Tournées</Text>
+        
+        {/* Sélecteur de date */}
+        <TouchableOpacity
+          onPress={() => setShowDatePicker(true)}
+          style={{
+            backgroundColor: theme.Colors.surface,
+            padding: 12,
+            borderRadius: 8,
+            marginBottom: 16,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            borderWidth: 1,
+            borderColor: theme.Colors.subtleBorder,
+          }}
+        >
+          <Text style={{ color: theme.Colors.text, fontSize: 16 }}>
+            📅 {formatDateToFrench(date)}
+          </Text>
+          <Text style={{ color: theme.Colors.primary }}>Changer</Text>
+        </TouchableOpacity>
+
+        {showDatePicker && (
+          <DateTimePicker
+            value={internalDate}
+            mode="date"
+            display="default"
+            onChange={onDateChange}
+          />
+        )}
+
+        {/* Stats globales */}
+        <View style={{
+          flexDirection: 'row',
+          justifyContent: 'space-around',
+          backgroundColor: theme.Colors.surface,
+          padding: 16,
+          borderRadius: 12,
+          marginBottom: 16,
+          borderWidth: 1,
+          borderColor: theme.Colors.subtleBorder,
+        }}>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={{ color: '#f59e0b', fontSize: 24, fontWeight: 'bold' }}>{totals.gofo}</Text>
+            <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>Gofo</Text>
+          </View>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={{ color: '#3b82f6', fontSize: 24, fontWeight: 'bold' }}>{totals.cainiao}</Text>
+            <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>Cainiao</Text>
+          </View>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={{ color: theme.Colors.success, fontSize: 24, fontWeight: 'bold' }}>{totals.total}</Text>
+            <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>Total</Text>
+          </View>
+        </View>
+
+        {/* Zone d'import */}
+        <View style={{
+          backgroundColor: theme.Colors.surface,
+          padding: 16,
+          borderRadius: 12,
+          marginBottom: 16,
+          borderWidth: 1,
+          borderColor: theme.Colors.subtleBorder,
+        }}>
+          <Text style={{ color: theme.Colors.text, fontSize: 16, fontWeight: 'bold', marginBottom: 12 }}>
+            📁 Importer des fichiers
+          </Text>
+          
+          {/* Liste des fichiers sélectionnés */}
+          {files.length > 0 && (
+            <View style={{ marginBottom: 12 }}>
+              {files.map((f, i) => (
+                <View key={i} style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: theme.Colors.primarySoft,
+                  padding: 10,
+                  borderRadius: 8,
+                  marginBottom: 6,
+                }}>
+                  <Text style={{ color: theme.Colors.text, flex: 1, fontSize: 13 }} numberOfLines={1}>
+                    📄 {f.name}
+                  </Text>
+                  <TouchableOpacity onPress={() => removeFile(i)}>
+                    <Text style={{ color: theme.Colors.danger, fontSize: 18, paddingHorizontal: 8 }}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
+          
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity
+              onPress={pickFiles}
+              style={{
+                flex: 1,
+                backgroundColor: theme.Colors.primary,
+                padding: 14,
+                borderRadius: 8,
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: '#fff', fontWeight: '600' }}>+ Ajouter fichiers</Text>
+            </TouchableOpacity>
+            
+            {files.length > 0 && (
+              <TouchableOpacity
+                onPress={importFiles}
+                disabled={importing}
+                style={{
+                  flex: 1,
+                  backgroundColor: theme.Colors.success,
+                  padding: 14,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                  opacity: importing ? 0.6 : 1,
+                }}
+              >
+                {importing ? (
+                  <Text style={{ color: '#fff', fontWeight: '600' }}>
+                    {importProgress.current}/{importProgress.total}...
+                  </Text>
+                ) : (
+                  <Text style={{ color: '#fff', fontWeight: '600' }}>🚀 Importer</Text>
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+
+        {/* Messages */}
+        {message && (
+          <Text style={{ color: theme.Colors.success, marginBottom: 12, textAlign: 'center', fontWeight: '600' }}>{message}</Text>
+        )}
+        {error && (
+          <Text style={{ color: theme.Colors.danger, marginBottom: 12, textAlign: 'center' }}>{error}</Text>
+        )}
+
+        {/* Bouton supprimer tout */}
+        {totals.total > 0 && (
+          <TouchableOpacity
+            onPress={deleteAllTours}
+            style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+              borderWidth: 1,
+              borderColor: theme.Colors.danger,
+              padding: 12,
+              borderRadius: 8,
+              alignItems: 'center',
+              marginBottom: 16,
+            }}
+          >
+            <Text style={{ color: theme.Colors.danger, fontWeight: '600' }}>🗑️ Supprimer tout</Text>
+          </TouchableOpacity>
+        )}
+
+        {loadingSummary ? (
+          <ActivityIndicator color={theme.Colors.primary} />
+        ) : (
+          <>
+            {/* Section Mutualisé */}
+            {mutualized.length > 0 && (
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ color: theme.Colors.success, fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
+                  🟢 Mutualisé ({mutualized.length})
+                </Text>
+                {mutualized.map((ch, i) => (
+                  <ChauffeurCard key={i} chauffeur={ch} onDelete={() => deleteChauffeur(ch.chauffeur)} />
+                ))}
+              </View>
+            )}
+
+            {/* Section Gofo uniquement */}
+            {gofoOnly.length > 0 && (
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ color: theme.Colors.warning, fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
+                  🟡 Gofo uniquement ({gofoOnly.length})
+                </Text>
+                {gofoOnly.map((ch, i) => (
+                  <ChauffeurCard key={i} chauffeur={ch} onDelete={() => deleteChauffeur(ch.chauffeur)} />
+                ))}
+              </View>
+            )}
+
+            {/* Section Cainiao uniquement */}
+            {caniaoOnly.length > 0 && (
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ color: theme.Colors.primary, fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
+                  🔵 Cainiao uniquement ({caniaoOnly.length})
+                </Text>
+                {caniaoOnly.map((ch, i) => (
+                  <ChauffeurCard key={i} chauffeur={ch} onDelete={() => deleteChauffeur(ch.chauffeur)} />
+                ))}
+              </View>
+            )}
+
+            {summary.length === 0 && (
+              <Text style={{ color: theme.Colors.textMuted, textAlign: 'center', marginTop: 20 }}>
+                Aucune tournée pour cette date
+              </Text>
+            )}
+          </>
+        )}
+
+        {/* Bouton retour */}
+        <AppButton
+          title="← Retour"
+          onPress={onBack}
+          style={{ backgroundColor: theme.Colors.muted, marginTop: 20 }}
+        />
+      </ScrollView>
+
+      {/* Modal chauffeurs inconnus */}
+      <RNModal visible={showUnknownModal} animationType="slide" transparent>
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          padding: 20,
+        }}>
+          <View style={{
+            backgroundColor: theme.Colors.surface,
+            borderRadius: 16,
+            padding: 20,
+            maxHeight: '80%',
+            borderWidth: 1,
+            borderColor: theme.Colors.subtleBorder,
+          }}>
+            <Text style={{ color: theme.Colors.text, fontSize: 18, fontWeight: 'bold', marginBottom: 16 }}>
+              👤 Chauffeurs inconnus
+            </Text>
+            
+            <ScrollView style={{ maxHeight: 400 }}>
+              {unknownChauffeurs.map((ch, i) => (
+                <View key={i} style={{
+                  backgroundColor: theme.Colors.surfaceMuted,
+                  padding: 12,
+                  borderRadius: 8,
+                  marginBottom: 12,
+                }}>
+                  <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 4 }}>
+                    🚚 {ch.name}
+                  </Text>
+                  <Text style={{ color: theme.Colors.textMuted, fontSize: 12, marginBottom: 8 }}>
+                    {ch.colisCount} colis
+                    {ch.stats.gofo > 0 && ` • ${ch.stats.gofo} Gofo`}
+                    {ch.stats.cainiao > 0 && ` • ${ch.stats.cainiao} Cainiao`}
+                  </Text>
+                  
+                  <View style={{
+                    flexDirection: 'row',
+                    flexWrap: 'wrap',
+                    gap: 6,
+                  }}>
+                    {availableST.map((st, j) => (
+                      <TouchableOpacity
+                        key={j}
+                        onPress={() => setAssignments(prev => ({ ...prev, [ch.name]: st }))}
+                        style={{
+                          backgroundColor: assignments[ch.name] === st ? theme.Colors.primary : theme.Colors.primarySoft,
+                          paddingHorizontal: 12,
+                          paddingVertical: 6,
+                          borderRadius: 20,
+                        }}
+                      >
+                        <Text style={{ color: assignments[ch.name] === st ? '#fff' : theme.Colors.primary, fontSize: 13 }}>{st}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+            
+            <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowUnknownModal(false);
+                  setPendingFiles([]);
+                  setAssignments({});
+                }}
+                style={{
+                  flex: 1,
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: theme.Colors.surfaceMuted,
+                  alignItems: 'center',
+                  borderWidth: 1,
+                  borderColor: theme.Colors.subtleBorder,
+                }}
+              >
+                <Text style={{ color: theme.Colors.text }}>Annuler</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                onPress={handleAssignAndRetry}
+                style={{
+                  flex: 1,
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: theme.Colors.success,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: 'bold' }}>Valider</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </RNModal>
+    </View>
+  );
+}
+
+// Composant carte chauffeur
+function ChauffeurCard({ chauffeur, onDelete }: { chauffeur: ChauffeurSummary; onDelete: () => void }) {
+  return (
+    <View style={{
+      backgroundColor: theme.Colors.surface,
+      padding: 12,
+      borderRadius: 10,
+      marginBottom: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: theme.Colors.subtleBorder,
+    }}>
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: theme.Colors.text, fontWeight: 'bold', fontSize: 15 }}>
+          {chauffeur.chauffeur}
+        </Text>
+        <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>
+          {chauffeur.sousTraitant}
+        </Text>
+      </View>
+      
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        {chauffeur.gofo.count > 0 && (
+          <View style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }}>
+            <Text style={{ color: '#d97706', fontSize: 13, fontWeight: 'bold' }}>{chauffeur.gofo.count}</Text>
+          </View>
+        )}
+        {chauffeur.cainiao.count > 0 && (
+          <View style={{ backgroundColor: 'rgba(37, 99, 235, 0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }}>
+            <Text style={{ color: theme.Colors.primary, fontSize: 13, fontWeight: 'bold' }}>{chauffeur.cainiao.count}</Text>
+          </View>
+        )}
+        <Text style={{ color: theme.Colors.success, fontWeight: 'bold', marginLeft: 4 }}>{chauffeur.total}</Text>
+        
+        <TouchableOpacity onPress={onDelete} style={{ padding: 6 }}>
+          <Text style={{ color: theme.Colors.danger, fontSize: 16 }}>🗑️</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+
+// ===============
 // ADMIN_HOME
 // ===============
 
 type AdminHomeProps = {
   onBack: () => void;
+  onGoToImport: () => void;
   onGoToTours: () => void;
   onGoToUsers: () => void;
 };
 
-function AdminHomeScreen({ onBack, onGoToTours, onGoToUsers }: AdminHomeProps) {
+function AdminHomeScreen({ onBack, onGoToImport, onGoToTours, onGoToUsers }: AdminHomeProps) {
   // Gestion du bouton retour Android
   useEffect(() => {
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -1710,10 +2403,17 @@ function AdminHomeScreen({ onBack, onGoToTours, onGoToUsers }: AdminHomeProps) {
     <View style={styles.container}>
       <Text style={styles.title}>Espace administrateur</Text>
       <View style={{ marginBottom: 16 }}>
-        <AppButton title="Gestion des tournées" onPress={onGoToTours} />
+        <AppButton 
+          title="🚀 Import & Tournées" 
+          onPress={onGoToImport} 
+          style={{ backgroundColor: '#22c55e' }}
+        />
       </View>
       <View style={{ marginBottom: 16 }}>
-        <AppButton title="Gestion des utilisateurs" onPress={onGoToUsers} />
+        <AppButton title="📋 Anciennes tournées" onPress={onGoToTours} />
+      </View>
+      <View style={{ marginBottom: 16 }}>
+        <AppButton title="👤 Gestion des utilisateurs" onPress={onGoToUsers} />
       </View>
       <AppButton title="← Retour" onPress={onBack} style={{ backgroundColor: "#E5E7EB", borderWidth: 1, borderColor: "#6B7280" }} />
     </View>
