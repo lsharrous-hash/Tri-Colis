@@ -396,13 +396,21 @@ function normalizeNameForGrouping(name) {
     if (!name) return 'Inconnu';
     let normalized = name.trim();
     
+    // Enlever les suffixes Windows (1), (2), etc.
+    normalized = normalized.replace(/\s*\(\d+\)$/g, '');
+    normalized = normalized.replace(/\s*\(\d+\)/g, '');  // Aussi au milieu
+    
+    // Enlever les espaces et underscores avant le suffixe potentiel
+    // Ex: "Louis c" → "Louisc", "Louis_c" → "Louisc"
+    normalized = normalized.replace(/[\s_]+([cmg])$/i, '$1');
+    
     // Liste de noms connus qui finissent par m, c ou g (ne pas les modifier)
     const namesEndingWithMCG = ['hakim', 'karim', 'brahim', 'ibrahim', 'selim', 'salim', 'nassim', 'eric', 'cedric', 'frederic', 'marc', 'luc', 'greg'];
     
     const lowerName = normalized.toLowerCase();
     
     // Si c'est un nom connu qui finit par m/c/g, ne pas enlever la lettre
-    if (namesEndingWithMCG.some(n => lowerName === n || lowerName.startsWith(n))) {
+    if (namesEndingWithMCG.some(n => lowerName === n || lowerName.startsWith(n + ' '))) {
         // Ne rien enlever, juste normaliser la casse
         if (normalized.length > 0) {
             normalized = normalized.charAt(0).toUpperCase() + normalized.slice(1).toLowerCase();
@@ -410,14 +418,11 @@ function normalizeNameForGrouping(name) {
         return normalized;
     }
     
-    // Sinon, enlever le suffixe seulement si:
-    // 1. Le nom fait plus de 5 caractères
-    // 2. Après suppression il reste au moins 4 caractères
-    if (normalized.length > 5) {
-        const withoutSuffix = normalized.replace(/[cmg]$/i, '');
-        if (withoutSuffix.length >= 4) {
-            normalized = withoutSuffix;
-        }
+    // Enlever le suffixe c/m/g à la fin (pour Gofo/Cainiao/Mutualisé)
+    // Condition: le nom fait plus de 3 caractères après suppression
+    const withoutSuffix = normalized.replace(/[cmg]$/i, '');
+    if (withoutSuffix.length >= 4 && normalized.length > withoutSuffix.length) {
+        normalized = withoutSuffix;
     }
     
     // Normaliser la casse
@@ -718,28 +723,72 @@ function countByType(colisList) {
 }
 
 function createTour(chauffeurName, sousTraitantName, date, type, colisList, plage) {
-    // Supprimer l'ancienne tournée si elle existe (même chauffeur + date + type)
-    const existingIndex = dataRef.tours.findIndex(t =>
+    // Chercher une tournée existante (même chauffeur + date + type)
+    const existingTour = dataRef.tours.find(t =>
         t.chauffeurName?.toLowerCase() === chauffeurName.toLowerCase() &&
         t.date === date &&
         ((type === 'gofo' && t.isGofo) || (type === 'cainiao' && t.isCaniao))
     );
     
-    if (existingIndex >= 0) {
-        const oldTour = dataRef.tours[existingIndex];
-        // Supprimer les colis de l'ancienne tournée
-        // On doit modifier le tableau in-place
-        for (let i = dataRef.colis.length - 1; i >= 0; i--) {
-            if (dataRef.colis[i].tourId === oldTour.id) {
-                dataRef.colis.splice(i, 1);
+    let tourId;
+    let addedCount = 0;
+    
+    if (existingTour) {
+        // FUSIONNER avec la tournée existante
+        tourId = existingTour.id;
+        
+        // Récupérer les trackings déjà présents pour éviter les doublons
+        const existingTrackings = new Set(
+            dataRef.colis
+                .filter(c => c.tourId === tourId)
+                .map(c => c.trackingNumber)
+        );
+        
+        // Ajouter uniquement les nouveaux colis (pas de doublons)
+        for (const colisData of colisList) {
+            if (!existingTrackings.has(colisData.trackingNumber)) {
+                const colisId = dataRef.getNextColisId();
+                dataRef.setNextColisId(colisId + 1);
+                
+                dataRef.colis.push({
+                    id: colisId,
+                    tourId: tourId,
+                    date: date,
+                    chauffeurName: chauffeurName,
+                    sousTraitantName: sousTraitantName,
+                    type: type,
+                    orderNumber: colisData.orderNumber,
+                    trackingNumber: colisData.trackingNumber,
+                    address: colisData.address || '',
+                    city: colisData.city || '',
+                    postalCode: colisData.postalCode || '',
+                    scanned: false,
+                    scannedAt: null,
+                    scannedBy: null
+                });
+                addedCount++;
             }
         }
-        dataRef.tours.splice(existingIndex, 1);
-        console.log(`[IMPORT] Tournée ${type} existante remplacée pour ${chauffeurName}`);
+        
+        // Mettre à jour le compteur de la tournée
+        existingTour.colisCount = dataRef.colis.filter(c => c.tourId === tourId).length;
+        
+        console.log(`[IMPORT] Tournée ${type} FUSIONNÉE pour ${chauffeurName}: +${addedCount} colis (total: ${existingTour.colisCount})`);
+        
+        return {
+            tourId: tourId,
+            chauffeur: chauffeurName,
+            sousTraitant: sousTraitantName,
+            type: type,
+            colisCount: addedCount,
+            totalColisInTour: existingTour.colisCount,
+            merged: true,
+            plage: plage
+        };
     }
     
-    // Créer la nouvelle tournée
-    const tourId = dataRef.getNextTourId();
+    // Pas de tournée existante - créer une nouvelle
+    tourId = dataRef.getNextTourId();
     dataRef.setNextTourId(tourId + 1);
     
     const newTour = {
@@ -778,12 +827,15 @@ function createTour(chauffeurName, sousTraitantName, date, type, colisList, plag
         });
     }
     
+    console.log(`[IMPORT] Nouvelle tournée ${type} créée pour ${chauffeurName}: ${colisList.length} colis`);
+    
     return {
         tourId: tourId,
         chauffeur: chauffeurName,
         sousTraitant: sousTraitantName,
         type: type,
         colisCount: colisList.length,
+        merged: false,
         plage: plage
     };
 }

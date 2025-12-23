@@ -3,7 +3,6 @@
 """
 Parser universel pour l'import de fichiers de livraison
 Supporte: PDF Spoke (multi/uni chauffeur), Excel Gofo, Excel Cainiao
-Extensible pour d'autres formats
 """
 
 import sys
@@ -20,7 +19,7 @@ EXCEL_FORMATS = {
         "tracking_columns": ["data.waybillNo", "waybillNo", "Tracking", "tracking", "Numéro de tracking"],
         "address_columns": ["data.toStreet", "toStreet", "Address", "address", "Adresse"],
         "city_columns": ["data.toCity", "toCity", "City", "city", "Ville"],
-        "postal_columns": [],  # Gofo n'a pas de code postal
+        "postal_columns": [],
         "order_columns": []
     },
     "cainiao": {
@@ -32,25 +31,40 @@ EXCEL_FORMATS = {
     }
 }
 
+# Liste des noms de sous-traitants à enlever des noms de fichiers
+SOUS_TRAITANTS = ["JNR", "SOW", "3AS", "D Transport", "DTrans", "D TRANSPORT"]
+
 # ============================================================
 # FONCTIONS DE NETTOYAGE
 # ============================================================
 
+def fix_encoding(text):
+    """Répare les problèmes d'encodage courants"""
+    if not text or not isinstance(text, str):
+        return text
+    
+    replacements = {
+        '�': 'é', '\ufffd': 'é',
+        'Ã©': 'é', 'Ã¨': 'è', 'Ãª': 'ê', 'Ã ': 'à',
+        'Ã¢': 'â', 'Ã®': 'î', 'Ã´': 'ô', 'Ã»': 'û',
+        'Ã§': 'ç', 'Ã‰': 'É', 'Ã€': 'À', 'Ã"': 'Ô',
+        'Å"': 'œ', 'â€™': "'", 'â€"': '-', 'â€œ': '"', 'â€': '"',
+    }
+    
+    result = text
+    for old, new in replacements.items():
+        result = result.replace(old, new)
+    return result
+
 def clean_tracking(text, source_type=None):
-    """
-    Nettoie le code tracking selon le type de source
-    - Gofo (GFFR): 18 chars -> 17 chars (enlève dernier chiffre parasite)
-    - Cainiao (DOFR/CNFR): enlève suffixe XHD
-    """
+    """Nettoie le code tracking"""
     if not text:
         return ""
     
-    # Convertir en string et nettoyer
     cleaned = str(text).replace('\n', '').replace(' ', '').replace(';', '').strip()
     
     # Enlever le suffixe HD pour Cainiao
     if cleaned.startswith(('DOFR', 'CNFR')):
-        # Pattern: ...XHD où X est un chiffre
         cleaned = re.sub(r'\dHD$', '', cleaned)
     
     # Enlever le dernier chiffre parasite pour Gofo (18 -> 17 chars)
@@ -81,11 +95,10 @@ def extract_city_from_address(address):
     if not address:
         return ""
     
-    # Patterns courants
     patterns = [
-        r',\s*([A-ZÀ-Ÿ][a-zà-ÿ\-]+)\s*,',  # Entre virgules
-        r',\s*([A-ZÀ-Ÿ][a-zà-ÿ\-]+)\s*$',  # Après dernière virgule
-        r'\d{5}\s+([A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+)',  # Après code postal
+        r',\s*([A-ZÀ-Ÿ][a-zà-ÿ\-]+)\s*,',
+        r',\s*([A-ZÀ-Ÿ][a-zà-ÿ\-]+)\s*$',
+        r'\d{5}\s+([A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+)',
     ]
     
     for pattern in patterns:
@@ -93,7 +106,6 @@ def extract_city_from_address(address):
         if match:
             return match.group(1).strip()
     
-    # Fallback: chercher "Reims" ou "REIMS"
     if re.search(r'\breims\b', address, re.IGNORECASE):
         return "Reims"
     
@@ -103,48 +115,8 @@ def extract_city_from_address(address):
 # PARSERS SPECIFIQUES
 # ============================================================
 
-def fix_encoding(text):
-    """
-    Répare les problèmes d'encodage courants dans les textes.
-    Remplace le caractère de remplacement Unicode (U+FFFD) et autres corruptions.
-    """
-    if not text or not isinstance(text, str):
-        return text
-    
-    # Remplacements courants pour les caractères corrompus
-    replacements = {
-        '�': 'é',  # Cas le plus courant
-        '\ufffd': 'é',
-        'Ã©': 'é',
-        'Ã¨': 'è',
-        'Ãª': 'ê',
-        'Ã ': 'à',
-        'Ã¢': 'â',
-        'Ã®': 'î',
-        'Ã´': 'ô',
-        'Ã»': 'û',
-        'Ã§': 'ç',
-        'Ã‰': 'É',
-        'Ã€': 'À',
-        'Ã"': 'Ô',
-        'Å"': 'œ',
-        'â€™': "'",
-        'â€"': '-',
-        'â€œ': '"',
-        'â€': '"',
-    }
-    
-    result = text
-    for old, new in replacements.items():
-        result = result.replace(old, new)
-    
-    return result
-
 def parse_excel(filepath, filename):
-    """
-    Parse un fichier Excel (Gofo ou Cainiao)
-    Retourne: {chauffeurs: [{name, colis: [...]}], format_detected}
-    """
+    """Parse un fichier Excel (Gofo ou Cainiao)"""
     try:
         import pandas as pd
     except ImportError:
@@ -153,12 +125,10 @@ def parse_excel(filepath, filename):
     df = pd.read_excel(filepath)
     columns = [str(c) for c in df.columns]
     
-    # Détecter le format
     detected_format = None
     column_mapping = {}
     
     for format_name, format_config in EXCEL_FORMATS.items():
-        # Chercher la colonne tracking
         tracking_col = None
         for tc in format_config["tracking_columns"]:
             if tc in columns:
@@ -169,7 +139,6 @@ def parse_excel(filepath, filename):
             detected_format = format_name
             column_mapping["tracking"] = tracking_col
             
-            # Chercher les autres colonnes
             for ac in format_config["address_columns"]:
                 if ac in columns:
                     column_mapping["address"] = ac
@@ -185,20 +154,13 @@ def parse_excel(filepath, filename):
                     column_mapping["postal"] = pc
                     break
             
-            for oc in format_config["order_columns"]:
-                if oc in columns:
-                    column_mapping["order"] = oc
-                    break
-            
             break
     
     if not detected_format:
         return {"error": f"Format Excel non reconnu. Colonnes trouvées: {columns}"}
     
-    # Extraire le nom du chauffeur depuis le nom du fichier
     chauffeur_name = extract_chauffeur_from_filename(filename)
     
-    # Parser les colis
     colis_list = []
     for idx, row in df.iterrows():
         tracking_raw = row.get(column_mapping.get("tracking", ""), "")
@@ -215,7 +177,7 @@ def parse_excel(filepath, filename):
         city = str(row.get(column_mapping.get("city", ""), "")) if column_mapping.get("city") else ""
         postal = ""
         
-        # Réparer l'encodage des caractères spéciaux
+        # Réparer l'encodage
         address = fix_encoding(address)
         city = fix_encoding(city)
         
@@ -224,15 +186,12 @@ def parse_excel(filepath, filename):
             if not pd.isna(postal_val):
                 postal = str(int(postal_val)) if isinstance(postal_val, float) else str(postal_val)
         
-        # Si pas de ville, essayer d'extraire de l'adresse
         if not city or city == "nan":
             city = extract_city_from_address(address)
         
-        # Si pas de code postal, essayer d'extraire de l'adresse
         if not postal:
             postal = extract_postal_code(address)
         
-        # Nettoyer les valeurs "nan"
         if city == "nan":
             city = ""
         if address == "nan":
@@ -241,7 +200,7 @@ def parse_excel(filepath, filename):
         colis_list.append({
             "trackingNumber": tracking,
             "type": colis_type,
-            "orderNumber": None,  # Excel n'a pas de numéro d'ordre
+            "orderNumber": None,
             "address": address.strip(),
             "city": city.strip(),
             "postalCode": postal.strip()
@@ -259,35 +218,28 @@ def parse_excel(filepath, filename):
     }
 
 def parse_pdf_spoke(filepath, filename):
-    """
-    Parse un fichier PDF Spoke (multi ou uni chauffeur)
-    Retourne: {chauffeurs: [{name, colis: [...]}], format_detected}
-    """
+    """Parse un fichier PDF Spoke (multi ou uni chauffeur)"""
     try:
         import pdfplumber
     except ImportError:
         return {"error": "pdfplumber non installé"}
     
     with pdfplumber.open(filepath) as pdf:
-        # Extraire le texte du header (première page)
         first_page = pdf.pages[0]
         header_text = first_page.extract_text() or ""
         header_lines = header_text.split('\n')[:5]
         header_combined = ' '.join(header_lines)
         
-        # Détecter les plages de chauffeurs
         plages = extract_chauffeur_plages(header_combined)
         
         is_multi = len(plages) > 0
         
-        # Si uni-chauffeur, extraire le nom du header ou du fichier
         if not is_multi:
             chauffeur_name = extract_chauffeur_from_header(header_lines[0] if header_lines else "")
             if not chauffeur_name:
                 chauffeur_name = extract_chauffeur_from_filename(filename)
             plages = [{"name": chauffeur_name, "start": 1, "end": 99999}]
         
-        # Extraire tous les colis du PDF
         all_colis = []
         for page in pdf.pages:
             tables = page.extract_tables()
@@ -296,12 +248,10 @@ def parse_pdf_spoke(filepath, filename):
                     if not row or len(row) < 4:
                         continue
                     
-                    # Ignorer les headers et lignes vides
                     order_str = row[0]
                     if not order_str or order_str == '#' or not order_str.strip().isdigit():
                         continue
                     
-                    # Ignorer "Lieu d'arrivée"
                     if row[1] and "Lieu d'" in str(row[1]):
                         continue
                     
@@ -326,7 +276,6 @@ def parse_pdf_spoke(filepath, filename):
                         "postalCode": postal
                     })
         
-        # Distribuer les colis par chauffeur selon les plages
         chauffeurs_data = []
         for plage in plages:
             chauffeur_colis = [
@@ -341,7 +290,6 @@ def parse_pdf_spoke(filepath, filename):
                     "colis": chauffeur_colis if chauffeur_colis else all_colis
                 })
         
-        # Si aucun chauffeur trouvé, mettre tous les colis sous "Inconnu"
         if not chauffeurs_data:
             chauffeur_name = extract_chauffeur_from_filename(filename)
             chauffeurs_data.append({
@@ -362,14 +310,11 @@ def parse_pdf_spoke(filepath, filename):
 # ============================================================
 
 def extract_chauffeur_plages(header_text):
-    """
-    Extrait les plages de chauffeurs depuis le header
-    Formats supportés: (NOM début-fin), (NOMdébut-fin), NOM (début-fin)
-    """
+    """Extrait les plages de chauffeurs depuis le header"""
     plages = []
     seen = set()
     
-    # Pattern: (NOM début-fin) ou (NOMdébut-fin) - espace optionnel
+    # Pattern: (NOM début-fin) - espace optionnel entre nom et chiffres
     matches = re.findall(r'\(([A-Za-zÀ-ÿ]+)\s*(\d+)-(\d+)\)', header_text)
     for match in matches:
         name = match[0].strip()
@@ -379,11 +324,9 @@ def extract_chauffeur_plages(header_text):
         
         if key not in seen and start < end:
             seen.add(key)
-            # Normaliser le nom: première lettre majuscule
             name_normalized = name[0].upper() + name[1:].lower()
             plages.append({"name": name_normalized, "start": start, "end": end})
     
-    # Pattern: NOM (début-fin) - si pas déjà trouvé
     if not plages:
         matches = re.findall(r'([A-Za-zÀ-ÿ]+)\s*\(\s*(\d+)\s*-\s*(\d+)\s*\)', header_text)
         for match in matches:
@@ -404,13 +347,11 @@ def extract_chauffeur_from_header(header_line):
     if not header_line:
         return None
     
-    # Pattern: "NomChauffeur JJ/MM" ou "NomChauffeur - date"
     match = re.match(r'^([A-Za-zÀ-ÿ]+)\s+\d+[/\-]', header_line)
     if match:
         name = match.group(1)
         return name[0].upper() + name[1:].lower()
     
-    # Pattern: "NomChauffeur - lun." etc.
     match = re.match(r'^([A-Za-zÀ-ÿ]+)\s+-\s+', header_line)
     if match:
         name = match.group(1)
@@ -423,30 +364,37 @@ def extract_chauffeur_from_filename(filename):
     if not filename:
         return "Inconnu"
     
-    # Enlever l'extension
     name = os.path.splitext(filename)[0]
     
-    # Enlever les suffixes courants: _JJ_MM, -JJ_MM, JJ_MM, 23_12, etc.
-    name = re.sub(r'[_\-\s]?\d{1,2}[_\-]\d{1,2}$', '', name)
+    # Enlever les suffixes Windows de téléchargement: (1), (2), etc.
+    name = re.sub(r'\s*\(\d+\)$', '', name)
+    name = re.sub(r'\s*\(\d+\)', '', name)  # Aussi au milieu
     
-    # Liste des noms de sous-traitants à enlever (insensible à la casse)
-    st_names = ['jnr', 'sow', 'dt', 'd transport', 'dtransport', 'ktm', 'speedhall', 'tcp', 'transport vals', 'ayoub-dt', 'ayoub dt']
+    # Enlever les suffixes de date: _JJ_MM, -JJ_MM, JJ_MM, etc.
+    name = re.sub(r'[_\-]?\d{1,2}[_\-]\d{1,2}$', '', name)
     
-    # Enlever les noms de ST en fin de chaîne (avec espace ou séparateur)
-    for st in st_names:
-        # Avec séparateur ou espace
-        name = re.sub(rf'[\s_\-]+{re.escape(st)}$', '', name, flags=re.IGNORECASE)
-        # Sans séparateur si le nom fait plus de longueur du ST + 3 caractères
-        if len(name) > len(st) + 3:
-            name = re.sub(rf'{re.escape(st)}$', '', name, flags=re.IGNORECASE)
+    # Enlever les noms de sous-traitants
+    for st in SOUS_TRAITANTS:
+        name = re.sub(r'\s+' + re.escape(st) + r'$', '', name, flags=re.IGNORECASE)
+        name = re.sub(r'[_\-]' + re.escape(st) + r'$', '', name, flags=re.IGNORECASE)
     
-    # Enlever les suffixes de type longs (avec ou sans séparateur)
-    name = re.sub(r'[_\-\s]?(mutualis[eé]|mutualise|gofo|cainiao|caniao|gffr|cnfr|dofr)$', '', name, flags=re.IGNORECASE)
+    # Enlever les suffixes de type (avec ou sans séparateur)
+    name = re.sub(r'[_\-]?(mutualisé|mutualise|gofo|cainiao|caniao|gffr|cnfr|dofr)$', '', name, flags=re.IGNORECASE)
     
-    # Enlever les suffixes courts m/c/g SEULEMENT avec séparateur (ex: ayoub_c, test-m)
+    # Enlever les suffixes courts c/m/g AVEC séparateur
     name = re.sub(r'[_\-][mcg]$', '', name, flags=re.IGNORECASE)
     
-    # Nettoyer
+    # Enlever le suffixe c/m/g COLLÉ au nom (pour "Louisc" → "Louis")
+    # Seulement si le nom fait plus de 4 caractères après suppression
+    # Et si ce n'est pas un nom connu se terminant par c/m/g
+    names_ending_with_cmg = ['hakim', 'karim', 'brahim', 'ibrahim', 'selim', 'salim', 'nassim', 
+                             'eric', 'cedric', 'frederic', 'marc', 'luc', 'greg']
+    name_lower = name.lower().strip()
+    if name_lower not in names_ending_with_cmg:
+        match = re.match(r'^(.{4,})[cmg]$', name, re.IGNORECASE)
+        if match:
+            name = match.group(1)
+    
     name = name.strip('_- ')
     
     if name:
@@ -470,9 +418,7 @@ def count_by_type(colis_list):
 # ============================================================
 
 def parse_file(filepath, filename=None):
-    """
-    Point d'entrée principal - détecte le format et parse le fichier
-    """
+    """Point d'entrée principal - détecte le format et parse le fichier"""
     if not os.path.exists(filepath):
         return {"error": f"Fichier non trouvé: {filepath}"}
     
@@ -489,6 +435,12 @@ def parse_file(filepath, filename=None):
         return {"error": f"Format non supporté: {ext}"}
 
 if __name__ == "__main__":
+    import io
+    
+    # Forcer UTF-8 pour stdout (résout les problèmes Windows cp1252)
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    
     if len(sys.argv) < 2:
         print(json.dumps({"error": "Usage: python parse_import.py <filepath> [filename]"}))
         sys.exit(1)
@@ -497,4 +449,5 @@ if __name__ == "__main__":
     filename = sys.argv[2] if len(sys.argv) > 2 else None
     
     result = parse_file(filepath, filename)
-    print(json.dumps(result, ensure_ascii=False))
+    # ensure_ascii=True pour éviter les problèmes d'encodage Windows
+    print(json.dumps(result, ensure_ascii=True))
