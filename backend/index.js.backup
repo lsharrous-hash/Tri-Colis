@@ -1,4 +1,4 @@
-﻿// index.js - VERSION CORRIGÉE
+// index.js - VERSION CORRIGÉE
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -137,7 +137,6 @@ function areDriverNamesMatching(name1, name2, threshold = 2) {
 
 // Fonction pour trouver les chauffeurs mutualisables
 function findMutualizedDrivers(date, sousTraitant) {
-  console.log("[DEBUG] findMutualizedDrivers appelée avec date:", date, "sousTraitant:", sousTraitant);
   // Récupérer les tournées optimisées (dispatcher import avec isOptimized)
   const optimizedTours = TOURS.filter(t => 
     t.date === date && 
