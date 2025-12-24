@@ -305,7 +305,16 @@ function findMutualizedDrivers(date, sousTraitant) {
     }
   }
   
-  return Array.from(driversMap.values());
+  // Filtrer par sous-traitant si spécifié (DISPATCHER)
+  let results = Array.from(driversMap.values());
+  if (sousTraitant) {
+    console.log(`[MUTUALIZED-FILTER] Avant filtre: ${results.length} chauffeurs, filtre: ${sousTraitant}`);
+    console.log(`[MUTUALIZED-FILTER] Sous-traitants présents: ${[...new Set(results.map(d => d.sousTraitant))].join(', ')}`);
+    results = results.filter(d => d.sousTraitant === sousTraitant);
+    console.log(`[MUTUALIZED-FILTER] Après filtre: ${results.length} chauffeurs`);
+  }
+  
+  return results;
 }
 
 // Fonction pour récupérer les colis mutualisés d'un chauffeur
@@ -1393,8 +1402,12 @@ app.get("/api/stats/unscanned", authMiddleware(["ADMIN", "DISPATCHER"]), (req, r
       return res.status(400).json({ error: "MISSING_DATE", message: "Date requise" });
     }
     
-    // Filtrer par sous-traitant si dispatcher
-    const filterSousTraitant = req.user.role === "DISPATCHER" ? req.user.sousTraitantName : sousTraitant;
+    // Pour DISPATCHER, récupérer le sousTraitantName depuis la DB
+    let filterSousTraitant = sousTraitant;
+    if (req.user.role === "DISPATCHER") {
+      const dbUser = USERS.find(u => u.id === req.user.userId);
+      filterSousTraitant = dbUser?.sousTraitantName || req.user.sousTraitantName;
+    }
     
     // Trouver les tournées pour cette date
     let toursForDate = TOURS.filter((t) => t.date === date);
@@ -1464,8 +1477,12 @@ app.get("/api/stats/scan-report", authMiddleware(["ADMIN", "DISPATCHER"]), (req,
       return res.status(400).json({ error: "MISSING_DATE", message: "Date requise" });
     }
     
-    // Filtrer par sous-traitant si dispatcher
-    const filterSousTraitant = req.user.role === "DISPATCHER" ? req.user.sousTraitantName : sousTraitant;
+    // Pour DISPATCHER, récupérer le sousTraitantName depuis la DB
+    let filterSousTraitant = sousTraitant;
+    if (req.user.role === "DISPATCHER") {
+      const dbUser = USERS.find(u => u.id === req.user.userId);
+      filterSousTraitant = dbUser?.sousTraitantName || req.user.sousTraitantName;
+    }
     
     // Trouver les tournées pour cette date
     let toursForDate = TOURS.filter((t) => t.date === date);
@@ -5109,8 +5126,13 @@ app.get("/api/mutualized/drivers", authMiddleware(["ADMIN", "DISPATCHER"]), (req
       return res.status(400).json({ error: "MISSING_DATE", message: "La date est requise" });
     }
     
-    // Pour un dispatcher, filtrer par son sous-traitant
-    const filterSousTraitant = req.user.role === "DISPATCHER" ? req.user.sousTraitantName : sousTraitant;
+    // Pour DISPATCHER, récupérer le sousTraitantName depuis la DB
+    let filterSousTraitant = sousTraitant;
+    if (req.user.role === "DISPATCHER") {
+      const dbUser = USERS.find(u => u.id === req.user.userId);
+      filterSousTraitant = dbUser?.sousTraitantName || req.user.sousTraitantName;
+      console.log(`[MUTUALIZED] DISPATCHER ${req.user.login} - sousTraitantName from token: ${req.user.sousTraitantName}, from DB: ${dbUser?.sousTraitantName}, using: ${filterSousTraitant}`);
+    }
     
     const drivers = findMutualizedDrivers(date, filterSousTraitant);
     
@@ -5154,7 +5176,12 @@ app.get("/api/mutualized/driver/:name", authMiddleware(["ADMIN", "DISPATCHER"]),
       return res.status(400).json({ error: "MISSING_DATE", message: "La date est requise" });
     }
     
-    const filterSousTraitant = req.user.role === "DISPATCHER" ? req.user.sousTraitantName : sousTraitant;
+    // Pour DISPATCHER, récupérer le sousTraitantName depuis la DB
+    let filterSousTraitant = sousTraitant;
+    if (req.user.role === "DISPATCHER") {
+      const dbUser = USERS.find(u => u.id === req.user.userId);
+      filterSousTraitant = dbUser?.sousTraitantName || req.user.sousTraitantName;
+    }
     
     const colis = getMutualizedColisForDriver(name, date, filterSousTraitant);
     
@@ -5191,6 +5218,13 @@ app.get("/api/mutualized/driver/:name/export", authMiddleware(["ADMIN", "DISPATC
     const { name } = req.params;
     const { date, sousTraitant, source } = req.query;
     
+    // Pour DISPATCHER, récupérer le sousTraitantName depuis la DB
+    let filterSousTraitant = sousTraitant;
+    if (req.user.role === "DISPATCHER") {
+      const dbUser = USERS.find(u => u.id === req.user.userId);
+      filterSousTraitant = dbUser?.sousTraitantName || req.user.sousTraitantName;
+    }
+    
     console.log('========================================');
     console.log('EXPORT REQUEST');
     console.log('Driver name:', name);
@@ -5198,16 +5232,13 @@ app.get("/api/mutualized/driver/:name/export", authMiddleware(["ADMIN", "DISPATC
     console.log('Source:', source);
     console.log('SousTraitant query:', sousTraitant);
     console.log('User role:', req.user.role);
-    console.log('User sousTraitant:', req.user.sousTraitantName);
+    console.log('User sousTraitant (from token):', req.user.sousTraitantName);
+    console.log('Filter sousTraitant (final):', filterSousTraitant);
     console.log('========================================');
     
     if (!date) {
       return res.status(400).json({ error: "MISSING_DATE", message: "La date est requise" });
     }
-    
-    const filterSousTraitant = req.user.role === "DISPATCHER" ? req.user.sousTraitantName : sousTraitant;
-    
-    console.log('Filter sousTraitant:', filterSousTraitant);
     
     let colis = getMutualizedColisForDriver(name, date, filterSousTraitant);
     
@@ -5890,24 +5921,37 @@ app.get("/api/chauffeurs/summary/:date", authMiddleware(["ADMIN", "DISPATCHER"])
     
     console.log(`[SUMMARY] Date: ${date}, User: ${user.login}, Role: ${user.role}, Filter ST: ${sousTraitantFilter}`);
     
-    // Filtrer les colis par date
-    let colisForDate = COLIS.filter(c => c.date === date);
+    // 1. D'abord filtrer les TOURS par date et sous-traitant
+    let toursForDate = TOURS.filter(t => t.date === date);
+    console.log(`[SUMMARY] Tours pour la date ${date}: ${toursForDate.length}`);
     
-    // Si dispatcher, filtrer par sous-traitant
+    // DEBUG: Afficher tous les sous-traitants uniques des tours
+    const uniqueST = [...new Set(toursForDate.map(t => t.sousTraitantName))];
+    console.log(`[SUMMARY] Sous-traitants dans les tours: ${JSON.stringify(uniqueST)}`);
+    
     if (user.role === "DISPATCHER" && sousTraitantFilter) {
-      colisForDate = colisForDate.filter(c => c.sousTraitantName === sousTraitantFilter);
+      console.log(`[SUMMARY] Filtrage par sous-traitant: "${sousTraitantFilter}"`);
+      toursForDate = toursForDate.filter(t => t.sousTraitantName === sousTraitantFilter);
+      console.log(`[SUMMARY] Tours après filtrage: ${toursForDate.length}`);
     }
+    const tourIdsForDate = new Set(toursForDate.map(t => t.id));
+    
+    // 2. Récupérer les COLIS de ces tours
+    const colisForDate = COLIS.filter(c => tourIdsForDate.has(c.tourId));
     
     // Grouper par chauffeur
     const chauffeurMap = new Map();
     
     for (const colis of colisForDate) {
-      const chauffeurName = colis.chauffeurName || "Inconnu";
+      // Trouver la tour pour obtenir le chauffeur et sous-traitant
+      const tour = toursForDate.find(t => t.id === colis.tourId);
+      const chauffeurName = tour?.chauffeurName || colis.chauffeurName || "Inconnu";
+      const sousTraitant = tour?.sousTraitantName || colis.sousTraitantName || "Inconnu";
       
       if (!chauffeurMap.has(chauffeurName)) {
         chauffeurMap.set(chauffeurName, {
           chauffeur: chauffeurName,
-          sousTraitant: colis.sousTraitantName || "Inconnu",
+          sousTraitant: sousTraitant,
           gofo: { count: 0 },
           cainiao: { count: 0 },
           total: 0
@@ -5923,7 +5967,7 @@ app.get("/api/chauffeurs/summary/:date", authMiddleware(["ADMIN", "DISPATCHER"])
         entry.gofo.count++;
       } else if (tracking.startsWith("DOFR") || tracking.startsWith("CNFR")) {
         entry.cainiao.count++;
-      } else if (colis.isCaniao || colis.type === "cainiao") {
+      } else if (tour?.isCaniao || colis.isCaniao || colis.type === "cainiao") {
         entry.cainiao.count++;
       } else {
         entry.gofo.count++; // Par défaut
@@ -5942,6 +5986,12 @@ app.get("/api/chauffeurs/summary/:date", authMiddleware(["ADMIN", "DISPATCHER"])
     };
     
     console.log(`[SUMMARY] ${chauffeurs.length} chauffeurs, ${totals.total} colis (${totals.gofo} Gofo, ${totals.cainiao} Cainiao)`);
+    
+    // DEBUG: Afficher les chauffeurs trouvés avec leur sous-traitant
+    console.log(`[SUMMARY] Chauffeurs trouvés:`);
+    chauffeurs.forEach(ch => {
+      console.log(`  - ${ch.chauffeur} (${ch.sousTraitant}): ${ch.total} colis`);
+    });
     
     res.json({
       date,

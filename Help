@@ -1,9 +1,14 @@
 # Commit sur dev
-git add web/src/pages/ToursImport.tsx
-git commit -m "fix: permettre création sous-traitant dans modal Cainiao"
+git checkout dev
+git commit -m "modif"
 
 # Push la branche dev (optionnel, pour backup sur GitHub)
 git push -u origin dev
+
+
+
+
+
 
 # Revenir sur main
 git checkout main
