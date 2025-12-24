@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useCallback } from 'react'
+import { useAuth } from '../contexts/AuthContext'
 import { 
   importUnified, 
   getChauffeursSummary, 
@@ -30,6 +31,9 @@ interface PendingFile {
 // =====================
 export function ImportUnifie() {
   const qc = useQueryClient()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'ADMIN'
+  const isDispatcher = user?.role === 'DISPATCHER'
   const today = new Date().toISOString().split('T')[0]
   
   // State
@@ -525,11 +529,26 @@ export function ImportUnifie() {
     <div className="stack">
       {/* Header */}
       <div className="surface">
-        <h1 className="title">Import Unifié</h1>
-        <p className="muted">
-          Importez vos fichiers PDF (Spoke) ou Excel (Gofo/Cainiao). 
-          Le système détecte automatiquement le format et sépare les colis.
-        </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h1 className="title">🚀 Import & Tournées</h1>
+            <p className="muted">
+              Importez vos fichiers PDF (Spoke) ou Excel (Gofo/Cainiao). 
+              Le système détecte automatiquement le format et sépare les colis.
+            </p>
+          </div>
+          {isDispatcher && user?.sousTraitantName && (
+            <span className="pill" style={{ 
+              background: 'rgba(34, 197, 94, 0.15)', 
+              color: '#22c55e',
+              padding: '8px 16px',
+              fontSize: 14,
+              fontWeight: 600
+            }}>
+              🏢 {user.sousTraitantName}
+            </span>
+          )}
+        </div>
       </div>
       
       {/* Formulaire d'import */}
@@ -733,27 +752,29 @@ export function ImportUnifie() {
                 <span style={{ color: '#f59e0b' }}>🟡 Gofo: {summaryData.totals.gofo}</span>
                 <span style={{ color: '#3b82f6' }}>🔵 Cainiao: {summaryData.totals.cainiao}</span>
                 <span style={{ fontWeight: 'bold' }}>Total: {summaryData.totals.total}</span>
-                <span style={{ color: '#444' }}>|</span>
+                {isAdmin && <span style={{ color: '#444' }}>|</span>}
               </>
             )}
-            <button
-              onClick={handleDeleteAllTours}
-              disabled={deleteAllToursMutation.isPending || !summaryData?.chauffeurs?.length}
-              style={{
-                padding: '6px 12px',
-                fontSize: 12,
-                background: 'rgba(239, 68, 68, 0.1)',
-                border: '1px solid #ef4444',
-                borderRadius: 6,
-                color: '#ef4444',
-                cursor: summaryData?.chauffeurs?.length ? 'pointer' : 'not-allowed',
-                opacity: summaryData?.chauffeurs?.length ? 1 : 0.5,
-                fontWeight: 500,
-              }}
-              title="Supprimer toutes les tournées de cette date"
-            >
-              🗑️ Supprimer tout
-            </button>
+            {isAdmin && (
+              <button
+                onClick={handleDeleteAllTours}
+                disabled={deleteAllToursMutation.isPending || !summaryData?.chauffeurs?.length}
+                style={{
+                  padding: '6px 12px',
+                  fontSize: 12,
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  border: '1px solid #ef4444',
+                  borderRadius: 6,
+                  color: '#ef4444',
+                  cursor: summaryData?.chauffeurs?.length ? 'pointer' : 'not-allowed',
+                  opacity: summaryData?.chauffeurs?.length ? 1 : 0.5,
+                  fontWeight: 500,
+                }}
+                title="Supprimer toutes les tournées de cette date"
+              >
+                🗑️ Supprimer tout
+              </button>
+            )}
           </div>
         </div>
         

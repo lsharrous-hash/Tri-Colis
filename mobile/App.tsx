@@ -34,6 +34,8 @@ import * as Haptics from "expo-haptics";
 import * as NavigationBar from "expo-navigation-bar";
 import { setBackgroundColorAsync } from "expo-system-ui";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 
 const getTodayDateString = () => {
   const d = new Date();
@@ -78,6 +80,7 @@ type Screen =
   | "TRI_REPORT"
   | "DISPATCHER_HOME"
   | "DISPATCHER_IMPORT"
+  | "DISPATCHER_IMPORT_UNIFIE"
   | "DISPATCHER_TOURS"
   | "ADMIN_HOME"
   | "ADMIN_IMPORT_UNIFIE"
@@ -343,10 +346,24 @@ export default function App() {
   if (screen === "DISPATCHER_HOME") {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.Colors.bg }}>
-        <DispatcherToursScreen
+        <DispatcherHomeScreen
+          onBack={() => setScreen("ROLE_HOME")}
+          onGoToImport={() => setScreen("DISPATCHER_IMPORT_UNIFIE")}
+          onGoToTours={() => setScreen("DISPATCHER_TOURS")}
+          onGoToProfile={() => setScreen("PROFILE")}
+          currentUser={currentUser}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  if (screen === "DISPATCHER_IMPORT_UNIFIE") {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: theme.Colors.bg }}>
+        <DispatcherImportUnifieScreen
+          onBack={() => setScreen("DISPATCHER_HOME")}
           authToken={authToken}
           currentUser={currentUser}
-          onBack={() => setScreen("ROLE_HOME")}
         />
       </SafeAreaView>
     );
@@ -1463,16 +1480,110 @@ function TriReportScreen({ onBack, authToken, currentUser }: TriReportProps) {
 interface DispatcherHomeProps {
   onBack: () => void;
   onGoToImport: () => void;
+  onGoToTours: () => void;
+  onGoToProfile: () => void;
+  currentUser: User | null;
 }
 
-function DispatcherHomeScreen({ onBack, onGoToImport }: DispatcherHomeProps) {
+function DispatcherHomeScreen({ onBack, onGoToImport, onGoToTours, onGoToProfile, currentUser }: DispatcherHomeProps) {
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBack();
+      return true;
+    });
+    return () => backHandler.remove();
+  }, [onBack]);
+
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Espace dispatcheur</Text>
-      <View style={{ marginBottom: 16 }}>
-        <AppButton title="Importer une tournée Spoke" onPress={onGoToImport} />
+      <Text style={styles.title}>🚚 Espace Sous-traitant</Text>
+      
+      {/* Info sous-traitant */}
+      <View style={{
+        backgroundColor: theme.Colors.surface,
+        padding: 16,
+        borderRadius: 12,
+        marginBottom: 20,
+        borderWidth: 1,
+        borderColor: theme.Colors.subtleBorder,
+      }}>
+        <Text style={{ color: theme.Colors.textMuted, fontSize: 13 }}>Connecté en tant que</Text>
+        <Text style={{ color: theme.Colors.text, fontSize: 18, fontWeight: 'bold', marginTop: 4 }}>
+          {currentUser?.sousTraitantName || currentUser?.login}
+        </Text>
       </View>
-      <AppButton title="← Retour" onPress={onBack} style={{ backgroundColor: "#E5E7EB", borderWidth: 1, borderColor: "#6B7280" }} />
+      
+      {/* Menu principal */}
+      <View style={{ gap: 12 }}>
+        <TouchableOpacity
+          onPress={onGoToImport}
+          style={{
+            backgroundColor: theme.Colors.success,
+            padding: 18,
+            borderRadius: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <Text style={{ fontSize: 24 }}>🚀</Text>
+          <View>
+            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Import & Tournées</Text>
+            <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>Importer et gérer vos tournées</Text>
+          </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={onGoToTours}
+          style={{
+            backgroundColor: theme.Colors.primary,
+            padding: 18,
+            borderRadius: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <Text style={{ fontSize: 24 }}>📊</Text>
+          <View>
+            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Mes Chauffeurs</Text>
+            <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>Vue mutualisée et exports</Text>
+          </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={onGoToProfile}
+          style={{
+            backgroundColor: theme.Colors.surface,
+            padding: 18,
+            borderRadius: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            borderWidth: 1,
+            borderColor: theme.Colors.subtleBorder,
+          }}
+        >
+          <Text style={{ fontSize: 24 }}>👤</Text>
+          <View>
+            <Text style={{ color: theme.Colors.text, fontWeight: 'bold', fontSize: 16 }}>Mon Profil</Text>
+            <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>Modifier mot de passe</Text>
+          </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={onBack}
+          style={{
+            backgroundColor: theme.Colors.muted,
+            padding: 16,
+            borderRadius: 10,
+            alignItems: 'center',
+            marginTop: 8,
+          }}
+        >
+          <Text style={{ color: '#fff', fontWeight: 'bold' }}>← Retour</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -1767,6 +1878,7 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
     if (!authToken || !date) return;
     
     setLoadingSummary(true);
+    setError(null); // Effacer les erreurs précédentes
     try {
       const res = await fetch(`${API_BASE_URL}/api/chauffeurs/summary/${date}`, {
         headers: { Authorization: `Bearer ${authToken}` },
@@ -1776,9 +1888,15 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
         const data = await res.json();
         setSummary(data.chauffeurs || []);
         setTotals(data.totals || { gofo: 0, cainiao: 0, total: 0 });
+      } else {
+        console.error("Erreur summary:", res.status);
+        setSummary([]);
+        setTotals({ gofo: 0, cainiao: 0, total: 0 });
       }
     } catch (e) {
       console.error("Erreur chargement summary:", e);
+      setSummary([]);
+      setTotals({ gofo: 0, cainiao: 0, total: 0 });
     } finally {
       setLoadingSummary(false);
     }
@@ -1938,6 +2056,8 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
           text: "Supprimer",
           style: "destructive",
           onPress: async () => {
+            setError(null);
+            setMessage(null);
             try {
               const res = await fetch(
                 `${API_BASE_URL}/api/admin/tours/all?date=${date}`,
@@ -1947,16 +2067,17 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
                 }
               );
               
+              const data = await res.json();
+              
               if (res.ok) {
-                const data = await res.json();
-                setMessage(`✅ ${data.deletedColis} colis supprimés`);
+                setMessage(`✅ ${data.deletedColis || 0} colis supprimés`);
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 loadSummary();
               } else {
-                setError("Erreur suppression");
+                setError(data.message || `Erreur ${res.status}`);
               }
-            } catch (e) {
-              setError("Erreur réseau");
+            } catch (e: any) {
+              setError(`Erreur réseau: ${e.message || 'Connexion impossible'}`);
             }
           },
         },
@@ -1974,9 +2095,11 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
           text: "Supprimer",
           style: "destructive",
           onPress: async () => {
+            setError(null);
+            setMessage(null);
             try {
               const res = await fetch(
-                `${API_BASE_URL}/api/import/chauffeur/${encodeURIComponent(chauffeurName)}?date=${date}`,
+                `${API_BASE_URL}/api/dispatcher/tour/${encodeURIComponent(chauffeurName)}?date=${date}`,
                 {
                   method: "DELETE",
                   headers: { Authorization: `Bearer ${authToken}` },
@@ -1985,15 +2108,79 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
               
               if (res.ok) {
                 setMessage(`✅ Tournées de ${chauffeurName} supprimées`);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 loadSummary();
+              } else {
+                const data = await res.json();
+                setError(data.message || "Erreur suppression");
               }
-            } catch (e) {
-              setError("Erreur réseau");
+            } catch (e: any) {
+              setError(`Erreur réseau: ${e.message || 'Connexion impossible'}`);
             }
           },
         },
       ]
     );
+  };
+
+  // Fonction d'export
+  const exportChauffeur = async (chauffeurName: string, type: 'all' | 'gofo' | 'cainiao') => {
+    if (!authToken) {
+      setError("Non connecté");
+      return;
+    }
+
+    try {
+      setMessage(`📥 Téléchargement en cours...`);
+      
+      // Construire l'URL
+      let url = `${API_BASE_URL}/api/mutualized/driver/${encodeURIComponent(chauffeurName)}/export?date=${date}`;
+      if (type !== 'all') {
+        url += `&source=${type}`;
+      }
+      
+      // Télécharger le fichier
+      const filename = `${chauffeurName}_${type === 'all' ? 'mutualisé' : type}_${date}.xlsx`;
+      const fileUri = FileSystem.documentDirectory + filename;
+      
+      const downloadResult = await FileSystem.downloadAsync(
+        url,
+        fileUri,
+        {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        }
+      );
+      
+      if (downloadResult.status !== 200) {
+        setError(`Erreur téléchargement (${downloadResult.status})`);
+        setMessage(null);
+        return;
+      }
+      
+      // Vérifier si le partage est disponible
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (!isAvailable) {
+        setError("Partage non disponible sur cet appareil");
+        setMessage(null);
+        return;
+      }
+      
+      // Partager le fichier
+      await Sharing.shareAsync(downloadResult.uri, {
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        dialogTitle: `Export ${chauffeurName}`,
+      });
+      
+      setMessage(`✅ ${filename} exporté`);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      
+    } catch (e: any) {
+      console.error("Erreur export:", e);
+      setError(`Erreur: ${e.message || 'Export impossible'}`);
+      setMessage(null);
+    }
   };
 
   // Séparer les chauffeurs par type
@@ -2174,7 +2361,12 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
                   🟢 Mutualisé ({mutualized.length})
                 </Text>
                 {mutualized.map((ch, i) => (
-                  <ChauffeurCard key={i} chauffeur={ch} onDelete={() => deleteChauffeur(ch.chauffeur)} />
+                  <ChauffeurCard 
+                    key={i} 
+                    chauffeur={ch} 
+                    onDelete={() => deleteChauffeur(ch.chauffeur)}
+                    onExport={(type) => exportChauffeur(ch.chauffeur, type)}
+                  />
                 ))}
               </View>
             )}
@@ -2186,7 +2378,12 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
                   🟡 Gofo uniquement ({gofoOnly.length})
                 </Text>
                 {gofoOnly.map((ch, i) => (
-                  <ChauffeurCard key={i} chauffeur={ch} onDelete={() => deleteChauffeur(ch.chauffeur)} />
+                  <ChauffeurCard 
+                    key={i} 
+                    chauffeur={ch} 
+                    onDelete={() => deleteChauffeur(ch.chauffeur)}
+                    onExport={(type) => exportChauffeur(ch.chauffeur, type)}
+                  />
                 ))}
               </View>
             )}
@@ -2198,7 +2395,12 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
                   🔵 Cainiao uniquement ({caniaoOnly.length})
                 </Text>
                 {caniaoOnly.map((ch, i) => (
-                  <ChauffeurCard key={i} chauffeur={ch} onDelete={() => deleteChauffeur(ch.chauffeur)} />
+                  <ChauffeurCard 
+                    key={i} 
+                    chauffeur={ch} 
+                    onDelete={() => deleteChauffeur(ch.chauffeur)}
+                    onExport={(type) => exportChauffeur(ch.chauffeur, type)}
+                  />
                 ))}
               </View>
             )}
@@ -2320,45 +2522,570 @@ function AdminImportUnifieScreen({ onBack, authToken }: AdminImportUnifieProps) 
   );
 }
 
+// ===============
+// DISPATCHER_IMPORT_UNIFIE (version pour sous-traitant)
+// ===============
+
+interface DispatcherImportUnifieProps {
+  onBack: () => void;
+  authToken: string | null;
+  currentUser: User | null;
+}
+
+function DispatcherImportUnifieScreen({ onBack, authToken, currentUser }: DispatcherImportUnifieProps) {
+  const [date, setDate] = useState(getTodayDateString());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [internalDate, setInternalDate] = useState(parseDateString(date));
+  
+  const [files, setFiles] = useState<DocumentPicker.DocumentPickerAsset[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  
+  const [summary, setSummary] = useState<ChauffeurSummary[]>([]);
+  const [totals, setTotals] = useState({ gofo: 0, cainiao: 0, total: 0 });
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const sousTraitantName = currentUser?.sousTraitantName || '';
+
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBack();
+      return true;
+    });
+    return () => backHandler.remove();
+  }, [onBack]);
+
+  useEffect(() => {
+    setInternalDate(parseDateString(date));
+  }, [date]);
+
+  useEffect(() => {
+    loadSummary();
+  }, [date, authToken]);
+
+  const onDateChange = (_event: any, selected?: Date) => {
+    setShowDatePicker(false);
+    if (selected) {
+      setInternalDate(selected);
+      const y = selected.getFullYear();
+      const m = String(selected.getMonth() + 1).padStart(2, '0');
+      const d = String(selected.getDate()).padStart(2, '0');
+      setDate(`${y}-${m}-${d}`);
+    }
+  };
+
+  const loadSummary = async () => {
+    if (!authToken || !date) return;
+    
+    setLoadingSummary(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/chauffeurs/summary/${date}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setSummary(data.chauffeurs || []);
+        setTotals(data.totals || { gofo: 0, cainiao: 0, total: 0 });
+      } else {
+        setSummary([]);
+        setTotals({ gofo: 0, cainiao: 0, total: 0 });
+      }
+    } catch (e) {
+      console.error("Erreur chargement summary:", e);
+      setSummary([]);
+      setTotals({ gofo: 0, cainiao: 0, total: 0 });
+    } finally {
+      setLoadingSummary(false);
+    }
+  };
+
+  const pickFiles = async () => {
+    setMessage(null);
+    setError(null);
+    
+    const result = await DocumentPicker.getDocumentAsync({
+      type: [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+      ],
+      multiple: true,
+      copyToCacheDirectory: true,
+    });
+
+    if (result.canceled) return;
+    setFiles(prev => [...prev, ...result.assets]);
+  };
+
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const importFiles = async () => {
+    if (!authToken || files.length === 0) return;
+    
+    setImporting(true);
+    setError(null);
+    setMessage(null);
+    setImportProgress({ current: 0, total: files.length });
+    
+    let successCount = 0;
+    let totalColis = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setImportProgress({ current: i + 1, total: files.length });
+      
+      try {
+        const formData = new FormData();
+        formData.append('date', date);
+        formData.append('sousTraitantName', sousTraitantName);
+        formData.append('file', {
+          uri: file.uri,
+          name: file.name || 'file',
+          type: file.mimeType || 'application/octet-stream',
+        } as any);
+        
+        const res = await fetch(`${API_BASE_URL}/api/import/unified`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${authToken}` },
+          body: formData,
+        });
+        
+        if (res.ok) {
+          const data = await res.json();
+          successCount++;
+          totalColis += data.totalColis || 0;
+        }
+      } catch (e) {
+        console.error(`Erreur import ${file.name}:`, e);
+      }
+    }
+    
+    setImporting(false);
+    setFiles([]);
+    
+    if (successCount > 0) {
+      setMessage(`✅ ${successCount} fichier(s) importé(s) - ${totalColis} colis`);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      loadSummary();
+    } else {
+      setError("Aucun fichier importé avec succès");
+    }
+  };
+
+  const deleteChauffeur = (chauffeurName: string) => {
+    Alert.alert(
+      "Supprimer",
+      `Supprimer les tournées de ${chauffeurName} ?`,
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Supprimer",
+          style: "destructive",
+          onPress: async () => {
+            setError(null);
+            setMessage(null);
+            try {
+              const res = await fetch(
+                `${API_BASE_URL}/api/dispatcher/tour/${encodeURIComponent(chauffeurName)}?date=${date}`,
+                {
+                  method: "DELETE",
+                  headers: { Authorization: `Bearer ${authToken}` },
+                }
+              );
+              
+              if (res.ok) {
+                setMessage(`✅ Tournées de ${chauffeurName} supprimées`);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                loadSummary();
+              } else {
+                const data = await res.json();
+                setError(data.message || "Erreur suppression");
+              }
+            } catch (e: any) {
+              setError(`Erreur réseau`);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const exportChauffeur = async (chauffeurName: string, type: 'all' | 'gofo' | 'cainiao') => {
+    if (!authToken) return;
+
+    try {
+      setMessage(`📥 Téléchargement...`);
+      
+      let url = `${API_BASE_URL}/api/mutualized/driver/${encodeURIComponent(chauffeurName)}/export?date=${date}`;
+      if (type !== 'all') url += `&source=${type}`;
+      
+      const filename = `${chauffeurName}_${type === 'all' ? 'mutualisé' : type}_${date}.xlsx`;
+      const fileUri = FileSystem.documentDirectory + filename;
+      
+      const downloadResult = await FileSystem.downloadAsync(url, fileUri, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      
+      if (downloadResult.status !== 200) {
+        setError(`Erreur téléchargement`);
+        setMessage(null);
+        return;
+      }
+      
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (isAvailable) {
+        await Sharing.shareAsync(downloadResult.uri, {
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          dialogTitle: `Export ${chauffeurName}`,
+        });
+      }
+      
+      setMessage(`✅ ${filename} exporté`);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      setError(`Erreur export`);
+      setMessage(null);
+    }
+  };
+
+  // Séparer les chauffeurs par type
+  const mutualized = summary.filter(ch => ch.gofo.count > 0 && ch.cainiao.count > 0);
+  const gofoOnly = summary.filter(ch => ch.gofo.count > 0 && ch.cainiao.count === 0);
+  const caniaoOnly = summary.filter(ch => ch.gofo.count === 0 && ch.cainiao.count > 0);
+
+  return (
+    <View style={styles.container}>
+      <ScrollView contentContainerStyle={{ padding: 16 }}>
+        <Text style={[styles.title, { marginBottom: 8 }]}>🚀 Import & Tournées</Text>
+        <Text style={{ color: theme.Colors.textMuted, marginBottom: 16 }}>
+          {sousTraitantName}
+        </Text>
+        
+        {/* Sélecteur de date */}
+        <TouchableOpacity
+          onPress={() => setShowDatePicker(true)}
+          style={{
+            backgroundColor: theme.Colors.surface,
+            padding: 12,
+            borderRadius: 8,
+            marginBottom: 16,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            borderWidth: 1,
+            borderColor: theme.Colors.subtleBorder,
+          }}
+        >
+          <Text style={{ color: theme.Colors.text, fontSize: 16 }}>
+            📅 {formatDateToFrench(date)}
+          </Text>
+          <Text style={{ color: theme.Colors.primary }}>Changer</Text>
+        </TouchableOpacity>
+
+        {showDatePicker && (
+          <DateTimePicker
+            value={internalDate}
+            mode="date"
+            display="default"
+            onChange={onDateChange}
+          />
+        )}
+
+        {/* Stats globales */}
+        <View style={{
+          flexDirection: 'row',
+          backgroundColor: theme.Colors.surface,
+          borderRadius: 10,
+          padding: 16,
+          marginBottom: 16,
+          borderWidth: 1,
+          borderColor: theme.Colors.subtleBorder,
+        }}>
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={{ color: '#f59e0b', fontSize: 24, fontWeight: 'bold' }}>{totals.gofo}</Text>
+            <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>Gofo</Text>
+          </View>
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={{ color: theme.Colors.primary, fontSize: 24, fontWeight: 'bold' }}>{totals.cainiao}</Text>
+            <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>Cainiao</Text>
+          </View>
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={{ color: theme.Colors.success, fontSize: 24, fontWeight: 'bold' }}>{totals.total}</Text>
+            <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>Total</Text>
+          </View>
+        </View>
+
+        {/* Import de fichiers */}
+        <View style={{
+          backgroundColor: theme.Colors.surface,
+          borderRadius: 12,
+          padding: 16,
+          marginBottom: 16,
+          borderWidth: 1,
+          borderColor: theme.Colors.subtleBorder,
+        }}>
+          <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 12 }}>
+            📁 Importer des fichiers
+          </Text>
+          
+          <TouchableOpacity
+            onPress={pickFiles}
+            disabled={importing}
+            style={{
+              backgroundColor: theme.Colors.primary,
+              padding: 14,
+              borderRadius: 8,
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ color: '#fff', fontWeight: 'bold' }}>+ Ajouter fichiers</Text>
+          </TouchableOpacity>
+
+          {files.length > 0 && (
+            <View style={{ marginTop: 12 }}>
+              {files.map((file, index) => (
+                <View key={index} style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: theme.Colors.surfaceMuted,
+                  padding: 10,
+                  borderRadius: 6,
+                  marginBottom: 6,
+                }}>
+                  <Text style={{ flex: 1, color: theme.Colors.text, fontSize: 13 }} numberOfLines={1}>
+                    {file.name}
+                  </Text>
+                  <TouchableOpacity onPress={() => removeFile(index)}>
+                    <Text style={{ color: theme.Colors.danger }}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              
+              <TouchableOpacity
+                onPress={importFiles}
+                disabled={importing}
+                style={{
+                  backgroundColor: theme.Colors.success,
+                  padding: 14,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                  marginTop: 8,
+                  opacity: importing ? 0.6 : 1,
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: 'bold' }}>
+                  {importing 
+                    ? `Import ${importProgress.current}/${importProgress.total}...` 
+                    : `🚀 Importer (${files.length} fichier${files.length > 1 ? 's' : ''})`
+                  }
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+
+        {/* Messages */}
+        {message && (
+          <Text style={{ color: theme.Colors.success, textAlign: 'center', marginBottom: 12 }}>{message}</Text>
+        )}
+        {error && (
+          <Text style={{ color: theme.Colors.danger, textAlign: 'center', marginBottom: 12 }}>{error}</Text>
+        )}
+
+        {/* Liste des chauffeurs */}
+        {loadingSummary ? (
+          <ActivityIndicator color={theme.Colors.primary} />
+        ) : (
+          <>
+            {mutualized.length > 0 && (
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ color: theme.Colors.success, fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
+                  🟢 Mutualisé ({mutualized.length})
+                </Text>
+                {mutualized.map((ch, i) => (
+                  <ChauffeurCard 
+                    key={i} 
+                    chauffeur={ch} 
+                    onDelete={() => deleteChauffeur(ch.chauffeur)}
+                    onExport={(type) => exportChauffeur(ch.chauffeur, type)}
+                  />
+                ))}
+              </View>
+            )}
+
+            {gofoOnly.length > 0 && (
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ color: '#f59e0b', fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
+                  🟡 Gofo uniquement ({gofoOnly.length})
+                </Text>
+                {gofoOnly.map((ch, i) => (
+                  <ChauffeurCard 
+                    key={i} 
+                    chauffeur={ch} 
+                    onDelete={() => deleteChauffeur(ch.chauffeur)}
+                    onExport={(type) => exportChauffeur(ch.chauffeur, type)}
+                  />
+                ))}
+              </View>
+            )}
+
+            {caniaoOnly.length > 0 && (
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ color: theme.Colors.primary, fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
+                  🔵 Cainiao uniquement ({caniaoOnly.length})
+                </Text>
+                {caniaoOnly.map((ch, i) => (
+                  <ChauffeurCard 
+                    key={i} 
+                    chauffeur={ch} 
+                    onDelete={() => deleteChauffeur(ch.chauffeur)}
+                    onExport={(type) => exportChauffeur(ch.chauffeur, type)}
+                  />
+                ))}
+              </View>
+            )}
+
+            {summary.length === 0 && (
+              <Text style={{ color: theme.Colors.textMuted, textAlign: 'center', marginTop: 20 }}>
+                Aucune tournée pour cette date
+              </Text>
+            )}
+          </>
+        )}
+
+        {/* Bouton retour */}
+        <TouchableOpacity
+          onPress={onBack}
+          style={{
+            backgroundColor: theme.Colors.muted,
+            padding: 14,
+            borderRadius: 10,
+            alignItems: 'center',
+            marginTop: 16,
+          }}
+        >
+          <Text style={{ color: '#fff', fontWeight: 'bold' }}>← Retour</Text>
+        </TouchableOpacity>
+      </ScrollView>
+    </View>
+  );
+}
+
 // Composant carte chauffeur
-function ChauffeurCard({ chauffeur, onDelete }: { chauffeur: ChauffeurSummary; onDelete: () => void }) {
+function ChauffeurCard({ 
+  chauffeur, 
+  onDelete,
+  onExport 
+}: { 
+  chauffeur: ChauffeurSummary; 
+  onDelete: () => void;
+  onExport: (type: 'all' | 'gofo' | 'cainiao') => void;
+}) {
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  
   return (
     <View style={{
       backgroundColor: theme.Colors.surface,
       padding: 12,
       borderRadius: 10,
       marginBottom: 8,
-      flexDirection: 'row',
-      alignItems: 'center',
       borderWidth: 1,
       borderColor: theme.Colors.subtleBorder,
     }}>
-      <View style={{ flex: 1 }}>
-        <Text style={{ color: theme.Colors.text, fontWeight: 'bold', fontSize: 15 }}>
-          {chauffeur.chauffeur}
-        </Text>
-        <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>
-          {chauffeur.sousTraitant}
-        </Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: theme.Colors.text, fontWeight: 'bold', fontSize: 15 }}>
+            {chauffeur.chauffeur}
+          </Text>
+          <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>
+            {chauffeur.sousTraitant}
+          </Text>
+        </View>
+        
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {chauffeur.gofo.count > 0 && (
+            <View style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }}>
+              <Text style={{ color: '#d97706', fontSize: 13, fontWeight: 'bold' }}>{chauffeur.gofo.count}</Text>
+            </View>
+          )}
+          {chauffeur.cainiao.count > 0 && (
+            <View style={{ backgroundColor: 'rgba(37, 99, 235, 0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }}>
+              <Text style={{ color: theme.Colors.primary, fontSize: 13, fontWeight: 'bold' }}>{chauffeur.cainiao.count}</Text>
+            </View>
+          )}
+          <Text style={{ color: theme.Colors.success, fontWeight: 'bold', marginLeft: 4 }}>{chauffeur.total}</Text>
+          
+          <TouchableOpacity onPress={() => setShowExportMenu(!showExportMenu)} style={{ padding: 6 }}>
+            <Text style={{ color: theme.Colors.primary, fontSize: 16 }}>📥</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity onPress={onDelete} style={{ padding: 6 }}>
+            <Text style={{ color: theme.Colors.danger, fontSize: 16 }}>🗑️</Text>
+          </TouchableOpacity>
+        </View>
       </View>
       
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        {chauffeur.gofo.count > 0 && (
-          <View style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }}>
-            <Text style={{ color: '#d97706', fontSize: 13, fontWeight: 'bold' }}>{chauffeur.gofo.count}</Text>
-          </View>
-        )}
-        {chauffeur.cainiao.count > 0 && (
-          <View style={{ backgroundColor: 'rgba(37, 99, 235, 0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }}>
-            <Text style={{ color: theme.Colors.primary, fontSize: 13, fontWeight: 'bold' }}>{chauffeur.cainiao.count}</Text>
-          </View>
-        )}
-        <Text style={{ color: theme.Colors.success, fontWeight: 'bold', marginLeft: 4 }}>{chauffeur.total}</Text>
-        
-        <TouchableOpacity onPress={onDelete} style={{ padding: 6 }}>
-          <Text style={{ color: theme.Colors.danger, fontSize: 16 }}>🗑️</Text>
-        </TouchableOpacity>
-      </View>
+      {/* Menu d'export */}
+      {showExportMenu && (
+        <View style={{ 
+          flexDirection: 'row', 
+          gap: 8, 
+          marginTop: 10,
+          paddingTop: 10,
+          borderTopWidth: 1,
+          borderTopColor: theme.Colors.subtleBorder,
+        }}>
+          {chauffeur.gofo.count > 0 && chauffeur.cainiao.count > 0 && (
+            <TouchableOpacity
+              onPress={() => { onExport('all'); setShowExportMenu(false); }}
+              style={{
+                flex: 1,
+                backgroundColor: theme.Colors.success,
+                padding: 8,
+                borderRadius: 6,
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>📥 Mutualisé</Text>
+            </TouchableOpacity>
+          )}
+          {chauffeur.gofo.count > 0 && (
+            <TouchableOpacity
+              onPress={() => { onExport('gofo'); setShowExportMenu(false); }}
+              style={{
+                flex: 1,
+                backgroundColor: '#f59e0b',
+                padding: 8,
+                borderRadius: 6,
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>📥 Gofo</Text>
+            </TouchableOpacity>
+          )}
+          {chauffeur.cainiao.count > 0 && (
+            <TouchableOpacity
+              onPress={() => { onExport('cainiao'); setShowExportMenu(false); }}
+              style={{
+                flex: 1,
+                backgroundColor: theme.Colors.primary,
+                padding: 8,
+                borderRadius: 6,
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>📥 Cainiao</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
     </View>
   );
 }
@@ -3823,7 +4550,7 @@ function AdminToursScreen({ onBack, authToken }: AdminToursProps) {
 }
 
 // ===============
-// ADMIN_USERS
+// ADMIN_USERS (avec onglets Utilisateurs / Chauffeurs)
 // ===============
 
 interface AdminUsersProps {
@@ -3838,9 +4565,91 @@ interface BackendUser {
   sousTraitantName: string | null;
 }
 
+interface Chauffeur {
+  name: string;
+  sousTraitant: string;
+}
+
 function AdminUsersScreen({ onBack, authToken }: AdminUsersProps) {
+  const [activeTab, setActiveTab] = useState<'users' | 'chauffeurs'>('users');
+
+  // Gestion du bouton retour Android
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBack();
+      return true;
+    });
+    return () => backHandler.remove();
+  }, [onBack]);
+
+  return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.Colors.bg }}>
+      {/* Header avec onglets */}
+      <View style={{ padding: 16, paddingBottom: 8 }}>
+        <Text style={[styles.title, { marginBottom: 12 }]}>👥 Gestion</Text>
+        
+        {/* Onglets */}
+        <View style={{
+          flexDirection: 'row',
+          backgroundColor: theme.Colors.surfaceMuted,
+          borderRadius: 10,
+          padding: 4,
+        }}>
+          <TouchableOpacity
+            onPress={() => setActiveTab('users')}
+            style={{
+              flex: 1,
+              padding: 12,
+              borderRadius: 8,
+              backgroundColor: activeTab === 'users' ? theme.Colors.primary : 'transparent',
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ 
+              color: activeTab === 'users' ? '#fff' : theme.Colors.textMuted,
+              fontWeight: activeTab === 'users' ? 'bold' : 'normal',
+            }}>
+              👤 Utilisateurs
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setActiveTab('chauffeurs')}
+            style={{
+              flex: 1,
+              padding: 12,
+              borderRadius: 8,
+              backgroundColor: activeTab === 'chauffeurs' ? theme.Colors.primary : 'transparent',
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ 
+              color: activeTab === 'chauffeurs' ? '#fff' : theme.Colors.textMuted,
+              fontWeight: activeTab === 'chauffeurs' ? 'bold' : 'normal',
+            }}>
+              🚗 Chauffeurs
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Contenu selon l'onglet */}
+      <View style={{ flex: 1 }}>
+        {activeTab === 'users' ? (
+          <UsersTab authToken={authToken} onBack={onBack} />
+        ) : (
+          <ChauffeursTab authToken={authToken} onBack={onBack} />
+        )}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ===============
+// ONGLET UTILISATEURS
+// ===============
+function UsersTab({ authToken, onBack }: { authToken: string | null; onBack: () => void }) {
   const [users, setUsers] = useState<BackendUser[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Modal de création/modification
@@ -3850,51 +4659,27 @@ function AdminUsersScreen({ onBack, authToken }: AdminUsersProps) {
   const [userPassword, setUserPassword] = useState("");
   const [userRole, setUserRole] = useState<"ADMIN" | "DISPATCHER" | "TRIEUR">("DISPATCHER");
   const [userSousTraitant, setUserSousTraitant] = useState("");
-  // Ajout d'un état pour la saisie du nouveau sous-traitant
   const [newSousTraitantName, setNewSousTraitantName] = useState("");
   const [showRolePicker, setShowRolePicker] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
-  // Liste des sous-traitants existants pour le sélecteur custom
   const [availableSousTraitants, setAvailableSousTraitants] = useState<string[]>([]);
   const [showSousTraitantPicker, setShowSousTraitantPicker] = useState(false);
 
-  // Gestion du bouton retour Android
-  useEffect(() => {
-    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (showUserModal) {
-        setShowUserModal(false);
-        return true;
-      }
-      if (showRolePicker) {
-        setShowRolePicker(false);
-        return true;
-      }
-      onBack();
-      return true;
-    });
-    return () => backHandler.remove();
-  }, [onBack, showUserModal, showRolePicker]);
-
-  // Charger les utilisateurs et les sous-traitants
   useEffect(() => {
     fetchUsers();
     fetchSousTraitants();
   }, []);
 
-  // Récupérer la liste des sous-traitants existants (pour éviter les doublons)
   const fetchSousTraitants = async () => {
     if (!authToken) return;
     try {
-      const response = await fetch(`${API_BASE_URL}/api/users`, {
+      const response = await fetch(`${API_BASE_URL}/api/sous-traitants`, {
         headers: { Authorization: `Bearer ${authToken}` }
       });
       if (!response.ok) return;
       const data = await response.json();
-      const sousTraitants = data
-        .map((u: BackendUser) => u.sousTraitantName)
-        .filter((name: string | null) => name && name.trim() !== "");
-      setAvailableSousTraitants(Array.from(new Set(sousTraitants)));
+      setAvailableSousTraitants(data.sousTraitants || []);
     } catch (e) {}
   };
 
@@ -3906,7 +4691,7 @@ function AdminUsersScreen({ onBack, authToken }: AdminUsersProps) {
       const response = await fetch(`${API_BASE_URL}/api/admin/users`, {
         headers: { Authorization: `Bearer ${authToken}` }
       });
-      if (!response.ok) throw new Error("Erreur lors du chargement des utilisateurs");
+      if (!response.ok) throw new Error("Erreur lors du chargement");
       const data = await response.json();
       setUsers(data.users || []);
     } catch (err: any) {
@@ -3941,24 +4726,22 @@ function AdminUsersScreen({ onBack, authToken }: AdminUsersProps) {
   const handleSaveUser = async () => {
     if (!authToken) return;
 
-    // Validation
     if (!userLogin.trim()) {
       setModalError("Le login est requis");
       return;
     }
     if (!editingUser && !userPassword.trim()) {
-      setModalError("Le mot de passe est requis pour un nouvel utilisateur");
+      setModalError("Le mot de passe est requis");
       return;
     }
-    // Validation du sous-traitant
     if ((userRole === "DISPATCHER" || userRole === "TRIEUR")) {
       if (userSousTraitant === "__new__") {
         if (!newSousTraitantName.trim()) {
-          setModalError("Le nom du nouveau sous-traitant est requis");
+          setModalError("Nom du sous-traitant requis");
           return;
         }
       } else if (!userSousTraitant.trim()) {
-        setModalError("Le sous-traitant est requis pour ce rôle");
+        setModalError("Sous-traitant requis");
         return;
       }
     }
@@ -3998,13 +4781,14 @@ function AdminUsersScreen({ onBack, authToken }: AdminUsersProps) {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || "Erreur lors de l'enregistrement");
+        const data = await response.json();
+        throw new Error(data.message || "Erreur");
       }
 
       setShowUserModal(false);
       fetchUsers();
-      Alert.alert("Succès", editingUser ? "Utilisateur modifié" : "Utilisateur créé");
+      fetchSousTraitants();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err: any) {
       setModalError(err.message);
     } finally {
@@ -4014,7 +4798,7 @@ function AdminUsersScreen({ onBack, authToken }: AdminUsersProps) {
 
   const handleDeleteUser = (user: BackendUser) => {
     Alert.alert(
-      "Confirmer la suppression",
+      "Supprimer",
       `Supprimer l'utilisateur "${user.login}" ?`,
       [
         { text: "Annuler", style: "cancel" },
@@ -4022,17 +4806,16 @@ function AdminUsersScreen({ onBack, authToken }: AdminUsersProps) {
           text: "Supprimer",
           style: "destructive",
           onPress: async () => {
-            if (!authToken) return;
             try {
               const response = await fetch(`${API_BASE_URL}/api/admin/users/${user.id}`, {
                 method: "DELETE",
                 headers: { Authorization: `Bearer ${authToken}` }
               });
-              if (!response.ok) throw new Error("Erreur lors de la suppression");
+              if (!response.ok) throw new Error("Erreur suppression");
               fetchUsers();
-              Alert.alert("Succès", "Utilisateur supprimé");
-            } catch (err: any) {
-              Alert.alert("Erreur", err.message);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } catch (err) {
+              Alert.alert("Erreur", "Impossible de supprimer l'utilisateur");
             }
           }
         }
@@ -4040,291 +4823,870 @@ function AdminUsersScreen({ onBack, authToken }: AdminUsersProps) {
     );
   };
 
+  const getRoleColor = (role: string) => {
+    switch (role) {
+      case 'ADMIN': return '#ef4444';
+      case 'DISPATCHER': return '#22c55e';
+      case 'TRIEUR': return '#3b82f6';
+      default: return '#888';
+    }
+  };
+
   return (
-    <ScrollView 
-      style={{ flex: 1, backgroundColor: theme.Colors.bg }}
-      contentContainerStyle={[styles.container, { paddingBottom: 100 }]}
-    >
-      <Text style={styles.title}>Gestion des utilisateurs</Text>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
+      {/* Bouton ajouter */}
+      <TouchableOpacity
+        onPress={handleCreateUser}
+        style={{
+          backgroundColor: theme.Colors.success,
+          padding: 14,
+          borderRadius: 10,
+          alignItems: 'center',
+          marginBottom: 16,
+        }}
+      >
+        <Text style={{ color: '#fff', fontWeight: 'bold' }}>➕ Nouvel utilisateur</Text>
+      </TouchableOpacity>
 
-      {error && (
-        <View style={{ backgroundColor: "#FEE2E2", padding: 12, borderRadius: 8, marginBottom: 16 }}>
-          <Text style={{ color: "#991B1B" }}>{error}</Text>
-        </View>
-      )}
+      {loading && <ActivityIndicator color={theme.Colors.primary} />}
+      {error && <Text style={{ color: theme.Colors.danger, marginBottom: 12 }}>{error}</Text>}
 
-      <View style={{ marginBottom: 16 }}>
-        <AppButton title="➕ Créer un utilisateur" onPress={handleCreateUser} />
-      </View>
-
-      {loading ? (
-        <ActivityIndicator size="large" color={theme.Colors.primary} />
-      ) : (
-        <View style={{ marginBottom: 16 }}>
-          {users.map((user) => (
-            <View
-              key={user.id}
-              style={{
-                backgroundColor: "#fff",
-                padding: 16,
-                borderRadius: 8,
-                marginBottom: 12,
-                borderWidth: 1,
-                borderColor: "#E5E7EB"
-              }}
-            >
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 16, fontWeight: "700", marginBottom: 4 }}>
-                    {user.login}
-                  </Text>
-                  <Text style={{ fontSize: 14, color: "#6B7280", marginBottom: 2 }}>
-                    Rôle: {user.role}
-                  </Text>
-                  {user.sousTraitantName && (
-                    <Text style={{ fontSize: 14, color: "#6B7280" }}>
-                      Sous-traitant: {user.sousTraitantName}
-                    </Text>
-                  )}
+      {/* Liste des utilisateurs */}
+      {users.map((user) => (
+        <View
+          key={user.id}
+          style={{
+            backgroundColor: theme.Colors.surface,
+            padding: 14,
+            borderRadius: 10,
+            marginBottom: 10,
+            borderWidth: 1,
+            borderColor: theme.Colors.subtleBorder,
+          }}
+        >
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: theme.Colors.text, fontWeight: 'bold', fontSize: 16 }}>
+                {user.login}
+              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <View style={{
+                  backgroundColor: getRoleColor(user.role),
+                  paddingHorizontal: 8,
+                  paddingVertical: 2,
+                  borderRadius: 10,
+                }}>
+                  <Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>{user.role}</Text>
                 </View>
-                <View style={{ flexDirection: "row" }}>
-                  <TouchableOpacity
-                    onPress={() => handleEditUser(user)}
-                    style={{
-                      backgroundColor: theme.Colors.primary,
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
-                      borderRadius: 6,
-                      marginRight: 8
-                    }}
-                  >
-                    <Text style={{ color: "#fff", fontSize: 12 }}>✏️</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleDeleteUser(user)}
-                    style={{
-                      backgroundColor: theme.Colors.danger,
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
-                      borderRadius: 6
-                    }}
-                  >
-                    <Text style={{ color: "#fff", fontSize: 12 }}>🗑️</Text>
-                  </TouchableOpacity>
-                </View>
+                {user.sousTraitantName && (
+                  <Text style={{ color: theme.Colors.textMuted, fontSize: 12 }}>
+                    {user.sousTraitantName}
+                  </Text>
+                )}
               </View>
             </View>
-          ))}
-
-          {users.length === 0 && !loading && (
-            <Text style={{ textAlign: "center", color: "#9CA3AF", fontStyle: "italic" }}>
-              Aucun utilisateur
-            </Text>
-          )}
-        </View>
-      )}
-
-      <AppButton
-        title="← Retour"
-        onPress={onBack}
-        style={{ backgroundColor: "#E5E7EB", borderWidth: 1, borderColor: "#6B7280" }}
-      />
-
-      {/* Modal de création/modification */}
-      <ModalView visible={showUserModal} onRequestClose={() => setShowUserModal(false)}>
-        <View style={{ paddingBottom: 16 }}>
-          <Text style={{ fontSize: 20, fontWeight: "700", marginBottom: 16 }}>
-            {editingUser ? "Modifier l'utilisateur" : "Créer un utilisateur"}
-          </Text>
-
-          {modalError && (
-            <View style={{ backgroundColor: "#FEE2E2", padding: 12, borderRadius: 8, marginBottom: 16 }}>
-              <Text style={{ color: "#991B1B" }}>{modalError}</Text>
-            </View>
-          )}
-
-          <Text style={{ fontSize: 14, fontWeight: "600", marginBottom: 8 }}>Login</Text>
-          <Input
-            value={userLogin}
-            onChangeText={setUserLogin}
-            placeholder="Nom d'utilisateur"
-            editable={!editingUser}
-            style={{ marginBottom: 16 }}
-          />
-
-          <Text style={{ fontSize: 14, fontWeight: "600", marginBottom: 8 }}>
-            {editingUser ? "Nouveau mot de passe (laisser vide pour ne pas changer)" : "Mot de passe"}
-          </Text>
-          <Input
-            value={userPassword}
-            onChangeText={setUserPassword}
-            placeholder="Mot de passe"
-            secureTextEntry
-            style={{ marginBottom: 16 }}
-          />
-
-          <Text style={{ fontSize: 14, fontWeight: "600", marginBottom: 8, marginTop: 16 }}>
-            Rôle
-          </Text>
-          <TouchableOpacity
-            onPress={() => setShowRolePicker(true)}
-            style={{
-              borderWidth: 1,
-              borderColor: "#CBD5E1",
-              borderRadius: 8,
-              padding: 12,
-              backgroundColor: "#fff",
-              marginBottom: 16
-            }}
-          >
-            <Text style={{ color: userRole ? "#0F172A" : "#9CA3AF" }}>
-              {userRole || "Sélectionner un rôle"}
-            </Text>
-          </TouchableOpacity>
-
-          {(userRole === "DISPATCHER" || userRole === "TRIEUR") && (
-            <>
-              <Text style={{ fontSize: 14, fontWeight: "600", marginBottom: 8 }}>Sous-traitant</Text>
-              {availableSousTraitants.length > 0 ? (
-                <>
-                  <TouchableOpacity
-                    onPress={() => setShowSousTraitantPicker(true)}
-                    style={{
-                      borderWidth: 1,
-                      borderColor: "#CBD5E1",
-                      borderRadius: 8,
-                      padding: 12,
-                      backgroundColor: "#fff",
-                      marginBottom: 16
-                    }}
-                  >
-                    <Text style={{ color: userSousTraitant ? "#0F172A" : "#9CA3AF" }}>
-                      {userSousTraitant
-                        ? (userSousTraitant === "__new__" ? "Nouveau sous-traitant..." : userSousTraitant)
-                        : "Sélectionner un sous-traitant"}
-                    </Text>
-                  </TouchableOpacity>
-                  <ModalView visible={showSousTraitantPicker} onRequestClose={() => setShowSousTraitantPicker(false)}>
-                    <View style={{ paddingBottom: 16 }}>
-                      <Text style={{ fontSize: 18, fontWeight: "700", marginBottom: 16 }}>
-                        Sélectionner un sous-traitant
-                      </Text>
-                      <ScrollView style={{ maxHeight: 300 }}>
-                        {availableSousTraitants.map((st) => (
-                          <TouchableOpacity
-                            key={st}
-                            onPress={() => {
-                              setUserSousTraitant(st);
-                              setShowSousTraitantPicker(false);
-                            }}
-                            style={{
-                              padding: 12,
-                              backgroundColor: userSousTraitant === st ? theme.Colors.primary : "#F8FAFC",
-                              borderRadius: 8,
-                              marginBottom: 8
-                            }}
-                          >
-                            <Text style={{ color: userSousTraitant === st ? "#fff" : "#0F172A", fontWeight: userSousTraitant === st ? "700" : "400" }}>
-                              {st}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                        <TouchableOpacity
-                          onPress={() => {
-                            setUserSousTraitant("__new__");
-                            setNewSousTraitantName("");
-                            setShowSousTraitantPicker(false);
-                          }}
-                          style={{
-                            padding: 12,
-                            backgroundColor: userSousTraitant === "__new__" ? theme.Colors.primary : "#F8FAFC",
-                            borderRadius: 8,
-                            marginBottom: 8
-                          }}
-                        >
-                          <Text style={{ color: userSousTraitant === "__new__" ? "#fff" : "#0F172A", fontWeight: userSousTraitant === "__new__" ? "700" : "400" }}>
-                            + Nouveau sous-traitant…
-                          </Text>
-                        </TouchableOpacity>
-                      </ScrollView>
-                      <AppButton
-                        title="Annuler"
-                        onPress={() => setShowSousTraitantPicker(false)}
-                        style={{ marginTop: 8, backgroundColor: theme.Colors.surface, borderWidth: 1, borderColor: theme.Colors.subtleBorder }}
-                      />
-                    </View>
-                  </ModalView>
-                </>
-              ) : (
-                <Input
-                  value={userSousTraitant}
-                  onChangeText={setUserSousTraitant}
-                  placeholder="Nom du sous-traitant"
-                  style={{ marginBottom: 16 }}
-                />
-              )}
-              {userSousTraitant === "__new__" && (
-                <Input
-                  value={newSousTraitantName}
-                  onChangeText={setNewSousTraitantName}
-                  placeholder="Nom du nouveau sous-traitant"
-                  style={{ marginBottom: 16 }}
-                />
-              )}
-            </>
-          )}
-
-          <View style={{ flexDirection: "row", marginTop: 16 }}>
-            <View style={{ flex: 1, marginRight: 12 }}>
-              <AppButton
-                title="Annuler"
-                onPress={() => setShowUserModal(false)}
-                style={{ backgroundColor: "#E5E7EB", borderWidth: 1, borderColor: "#6B7280" }}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <AppButton
-                title={modalLoading ? "..." : "Enregistrer"}
-                onPress={handleSaveUser}
-                disabled={modalLoading}
-              />
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity onPress={() => handleEditUser(user)} style={{ padding: 8 }}>
+                <Text style={{ fontSize: 18 }}>✏️</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => handleDeleteUser(user)} style={{ padding: 8 }}>
+                <Text style={{ fontSize: 18 }}>🗑️</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
-      </ModalView>
+      ))}
 
-      {/* Picker de rôle */}
-      <ModalView visible={showRolePicker} onRequestClose={() => setShowRolePicker(false)}>
-        <View style={{ paddingBottom: 16 }}>
-          <Text style={{ fontSize: 18, fontWeight: "700", marginBottom: 16 }}>
-            Sélectionner un rôle
-          </Text>
+      {users.length === 0 && !loading && (
+        <Text style={{ color: theme.Colors.textMuted, textAlign: 'center' }}>
+          Aucun utilisateur
+        </Text>
+      )}
 
-          {(["ADMIN", "DISPATCHER", "TRIEUR"] as const).map((role) => (
-            <TouchableOpacity
-              key={role}
-              onPress={() => {
-                setUserRole(role);
-                setShowRolePicker(false);
-              }}
-              style={{
-                padding: 12,
-                backgroundColor: userRole === role ? theme.Colors.primary : "#F8FAFC",
-                borderRadius: 8,
-                marginBottom: 8
-              }}
-            >
-              <Text style={{ color: userRole === role ? "#fff" : "#0F172A", fontWeight: userRole === role ? "700" : "400" }}>
-                {role}
+      {/* Modal utilisateur */}
+      <RNModal visible={showUserModal} animationType="slide" transparent>
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          padding: 20,
+        }}>
+          <View style={{
+            backgroundColor: theme.Colors.surface,
+            borderRadius: 16,
+            padding: 20,
+            maxHeight: '80%',
+          }}>
+            <Text style={{ color: theme.Colors.text, fontSize: 18, fontWeight: 'bold', marginBottom: 16 }}>
+              {editingUser ? '✏️ Modifier utilisateur' : '➕ Nouvel utilisateur'}
+            </Text>
+
+            {modalError && (
+              <Text style={{ color: theme.Colors.danger, marginBottom: 12 }}>{modalError}</Text>
+            )}
+
+            <ScrollView>
+              <Text style={{ color: theme.Colors.textMuted, marginBottom: 4 }}>Login</Text>
+              <TextInput
+                value={userLogin}
+                onChangeText={setUserLogin}
+                placeholder="Nom d'utilisateur"
+                style={{
+                  backgroundColor: theme.Colors.surfaceMuted,
+                  padding: 12,
+                  borderRadius: 8,
+                  marginBottom: 12,
+                  color: theme.Colors.text,
+                }}
+                placeholderTextColor={theme.Colors.textMuted}
+              />
+
+              <Text style={{ color: theme.Colors.textMuted, marginBottom: 4 }}>
+                Mot de passe {editingUser && '(laisser vide pour ne pas changer)'}
               </Text>
-            </TouchableOpacity>
-          ))}
+              <TextInput
+                value={userPassword}
+                onChangeText={setUserPassword}
+                placeholder="Mot de passe"
+                secureTextEntry
+                style={{
+                  backgroundColor: theme.Colors.surfaceMuted,
+                  padding: 12,
+                  borderRadius: 8,
+                  marginBottom: 12,
+                  color: theme.Colors.text,
+                }}
+                placeholderTextColor={theme.Colors.textMuted}
+              />
+
+              <Text style={{ color: theme.Colors.textMuted, marginBottom: 4 }}>Rôle</Text>
+              <TouchableOpacity
+                onPress={() => setShowRolePicker(true)}
+                style={{
+                  backgroundColor: theme.Colors.surfaceMuted,
+                  padding: 12,
+                  borderRadius: 8,
+                  marginBottom: 12,
+                }}
+              >
+                <Text style={{ color: theme.Colors.text }}>{userRole}</Text>
+              </TouchableOpacity>
+
+              {(userRole === "DISPATCHER" || userRole === "TRIEUR") && (
+                <>
+                  <Text style={{ color: theme.Colors.textMuted, marginBottom: 4 }}>Sous-traitant</Text>
+                  <TouchableOpacity
+                    onPress={() => setShowSousTraitantPicker(true)}
+                    style={{
+                      backgroundColor: theme.Colors.surfaceMuted,
+                      padding: 12,
+                      borderRadius: 8,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <Text style={{ color: userSousTraitant ? theme.Colors.text : theme.Colors.textMuted }}>
+                      {userSousTraitant === "__new__" ? "Nouveau..." : (userSousTraitant || "Sélectionner")}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {userSousTraitant === "__new__" && (
+                    <TextInput
+                      value={newSousTraitantName}
+                      onChangeText={setNewSousTraitantName}
+                      placeholder="Nom du nouveau sous-traitant"
+                      style={{
+                        backgroundColor: theme.Colors.surfaceMuted,
+                        padding: 12,
+                        borderRadius: 8,
+                        marginBottom: 12,
+                        color: theme.Colors.text,
+                      }}
+                      placeholderTextColor={theme.Colors.textMuted}
+                    />
+                  )}
+                </>
+              )}
+            </ScrollView>
+
+            <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
+              <TouchableOpacity
+                onPress={() => setShowUserModal(false)}
+                style={{
+                  flex: 1,
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: theme.Colors.surfaceMuted,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: theme.Colors.text }}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSaveUser}
+                disabled={modalLoading}
+                style={{
+                  flex: 1,
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: theme.Colors.success,
+                  alignItems: 'center',
+                  opacity: modalLoading ? 0.6 : 1,
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: 'bold' }}>
+                  {modalLoading ? '...' : 'Enregistrer'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
-      </ModalView>
+      </RNModal>
+
+      {/* Modal rôle */}
+      <RNModal visible={showRolePicker} animationType="fade" transparent>
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 }}
+          onPress={() => setShowRolePicker(false)}
+        >
+          <View style={{ backgroundColor: theme.Colors.surface, borderRadius: 12, padding: 16 }}>
+            <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 12 }}>Rôle</Text>
+            {(['ADMIN', 'DISPATCHER', 'TRIEUR'] as const).map((role) => (
+              <TouchableOpacity
+                key={role}
+                onPress={() => { setUserRole(role); setShowRolePicker(false); }}
+                style={{
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: userRole === role ? theme.Colors.primary : theme.Colors.surfaceMuted,
+                  marginBottom: 8,
+                }}
+              >
+                <Text style={{ color: userRole === role ? '#fff' : theme.Colors.text }}>{role}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </RNModal>
+
+      {/* Modal sous-traitant */}
+      <RNModal visible={showSousTraitantPicker} animationType="fade" transparent>
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 }}
+          onPress={() => setShowSousTraitantPicker(false)}
+        >
+          <View style={{ backgroundColor: theme.Colors.surface, borderRadius: 12, padding: 16, maxHeight: '60%' }}>
+            <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 12 }}>Sous-traitant</Text>
+            <ScrollView>
+              {availableSousTraitants.map((st) => (
+                <TouchableOpacity
+                  key={st}
+                  onPress={() => { setUserSousTraitant(st); setShowSousTraitantPicker(false); }}
+                  style={{
+                    padding: 14,
+                    borderRadius: 8,
+                    backgroundColor: userSousTraitant === st ? theme.Colors.primary : theme.Colors.surfaceMuted,
+                    marginBottom: 8,
+                  }}
+                >
+                  <Text style={{ color: userSousTraitant === st ? '#fff' : theme.Colors.text }}>{st}</Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                onPress={() => { setUserSousTraitant("__new__"); setShowSousTraitantPicker(false); }}
+                style={{
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: userSousTraitant === "__new__" ? theme.Colors.primary : theme.Colors.surfaceMuted,
+                  marginBottom: 8,
+                }}
+              >
+                <Text style={{ color: userSousTraitant === "__new__" ? '#fff' : theme.Colors.primary }}>
+                  + Nouveau sous-traitant...
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </RNModal>
+
+      {/* Bouton retour */}
+      <TouchableOpacity
+        onPress={onBack}
+        style={{
+          backgroundColor: theme.Colors.muted,
+          padding: 14,
+          borderRadius: 10,
+          alignItems: 'center',
+          marginTop: 16,
+        }}
+      >
+        <Text style={{ color: '#fff', fontWeight: 'bold' }}>← Retour</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
 
+// ===============
+// ONGLET CHAUFFEURS
+// ===============
+function ChauffeursTab({ authToken, onBack }: { authToken: string | null; onBack: () => void }) {
+  const [chauffeurs, setChauffeurs] = useState<Chauffeur[]>([]);
+  const [sousTraitants, setSousTraitants] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  // Filtre
+  const [filterST, setFilterST] = useState<string>('TOUS');
+  const [showFilterPicker, setShowFilterPicker] = useState(false);
+
+  // Ajout chauffeur
+  const [newChauffeur, setNewChauffeur] = useState('');
+  const [newChauffeurST, setNewChauffeurST] = useState('');
+  const [showSTPickerAdd, setShowSTPickerAdd] = useState(false);
+
+  // Ajout sous-traitant
+  const [newST, setNewST] = useState('');
+
+  // Édition
+  const [editingChauffeur, setEditingChauffeur] = useState<Chauffeur | null>(null);
+  const [editST, setEditST] = useState('');
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showSTPickerEdit, setShowSTPickerEdit] = useState(false);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    if (!authToken) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/chauffeurs`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (!res.ok) throw new Error("Erreur chargement");
+      const data = await res.json();
+      setChauffeurs(data.chauffeurs || []);
+      setSousTraitants(data.sousTraitants || []);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const addChauffeur = async () => {
+    if (!authToken || !newChauffeur.trim() || !newChauffeurST) {
+      setError("Nom et sous-traitant requis");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/chauffeurs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ name: newChauffeur.trim(), sousTraitant: newChauffeurST })
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || "Erreur");
+      }
+      setNewChauffeur('');
+      setNewChauffeurST('');
+      setMessage("✅ Chauffeur ajouté");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const addSousTraitant = async () => {
+    if (!authToken || !newST.trim()) {
+      setError("Nom requis");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/sous-traitants`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ name: newST.trim() })
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || "Erreur");
+      }
+      setNewST('');
+      setMessage("✅ Sous-traitant ajouté");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const deleteChauffeur = (ch: Chauffeur) => {
+    Alert.alert("Supprimer", `Supprimer le chauffeur "${ch.name}" ?`, [
+      { text: "Annuler", style: "cancel" },
+      {
+        text: "Supprimer",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const res = await fetch(`${API_BASE_URL}/api/chauffeurs/${encodeURIComponent(ch.name)}`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${authToken}` }
+            });
+            if (!res.ok) throw new Error("Erreur");
+            setMessage("✅ Chauffeur supprimé");
+            fetchData();
+          } catch (err) {
+            setError("Erreur suppression");
+          }
+        }
+      }
+    ]);
+  };
+
+  const deleteSousTraitant = (st: string) => {
+    const count = chauffeurs.filter(c => c.sousTraitant === st).length;
+    if (count > 0) {
+      Alert.alert("Impossible", `Ce sous-traitant a encore ${count} chauffeur(s)`);
+      return;
+    }
+    Alert.alert("Supprimer", `Supprimer le sous-traitant "${st}" ?`, [
+      { text: "Annuler", style: "cancel" },
+      {
+        text: "Supprimer",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const res = await fetch(`${API_BASE_URL}/api/sous-traitants/${encodeURIComponent(st)}`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${authToken}` }
+            });
+            if (!res.ok) throw new Error("Erreur");
+            setMessage("✅ Sous-traitant supprimé");
+            fetchData();
+          } catch (err) {
+            setError("Erreur suppression");
+          }
+        }
+      }
+    ]);
+  };
+
+  const openEditChauffeur = (ch: Chauffeur) => {
+    setEditingChauffeur(ch);
+    setEditST(ch.sousTraitant);
+    setShowEditModal(true);
+  };
+
+  const saveEditChauffeur = async () => {
+    if (!authToken || !editingChauffeur || !editST) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/chauffeurs/${encodeURIComponent(editingChauffeur.name)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ sousTraitant: editST })
+      });
+      if (!res.ok) throw new Error("Erreur");
+      setShowEditModal(false);
+      setMessage("✅ Chauffeur modifié");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      fetchData();
+    } catch (err) {
+      setError("Erreur modification");
+    }
+  };
+
+  // Filtrer les chauffeurs
+  const filteredChauffeurs = filterST === 'TOUS' 
+    ? chauffeurs 
+    : chauffeurs.filter(c => c.sousTraitant === filterST);
+
+  // Grouper par sous-traitant
+  const grouped: Record<string, Chauffeur[]> = {};
+  filteredChauffeurs.forEach(ch => {
+    if (!grouped[ch.sousTraitant]) grouped[ch.sousTraitant] = [];
+    grouped[ch.sousTraitant].push(ch);
+  });
+
+  return (
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
+      {/* Messages */}
+      {message && (
+        <Text style={{ color: theme.Colors.success, marginBottom: 12, textAlign: 'center' }}>{message}</Text>
+      )}
+      {error && (
+        <Text style={{ color: theme.Colors.danger, marginBottom: 12, textAlign: 'center' }}>{error}</Text>
+      )}
+
+      {/* Ajouter chauffeur */}
+      <View style={{
+        backgroundColor: theme.Colors.surface,
+        padding: 16,
+        borderRadius: 12,
+        marginBottom: 16,
+        borderWidth: 1,
+        borderColor: theme.Colors.subtleBorder,
+      }}>
+        <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 12 }}>
+          ➕ Ajouter un chauffeur
+        </Text>
+        <TextInput
+          value={newChauffeur}
+          onChangeText={setNewChauffeur}
+          placeholder="Nom du chauffeur"
+          style={{
+            backgroundColor: theme.Colors.surfaceMuted,
+            padding: 12,
+            borderRadius: 8,
+            marginBottom: 8,
+            color: theme.Colors.text,
+          }}
+          placeholderTextColor={theme.Colors.textMuted}
+        />
+        <TouchableOpacity
+          onPress={() => setShowSTPickerAdd(true)}
+          style={{
+            backgroundColor: theme.Colors.surfaceMuted,
+            padding: 12,
+            borderRadius: 8,
+            marginBottom: 12,
+          }}
+        >
+          <Text style={{ color: newChauffeurST ? theme.Colors.text : theme.Colors.textMuted }}>
+            {newChauffeurST || "Sélectionner un sous-traitant"}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={addChauffeur}
+          style={{
+            backgroundColor: theme.Colors.success,
+            padding: 12,
+            borderRadius: 8,
+            alignItems: 'center',
+          }}
+        >
+          <Text style={{ color: '#fff', fontWeight: 'bold' }}>Ajouter</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Sous-traitants */}
+      <View style={{
+        backgroundColor: theme.Colors.surface,
+        padding: 16,
+        borderRadius: 12,
+        marginBottom: 16,
+        borderWidth: 1,
+        borderColor: theme.Colors.subtleBorder,
+      }}>
+        <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 12 }}>
+          🏢 Sous-traitants ({sousTraitants.length})
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {sousTraitants.map(st => {
+            const count = chauffeurs.filter(c => c.sousTraitant === st).length;
+            return (
+              <View key={st} style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: theme.Colors.surfaceMuted,
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                borderRadius: 20,
+                gap: 6,
+              }}>
+                <Text style={{ color: theme.Colors.text, fontWeight: 'bold' }}>{st}</Text>
+                <View style={{
+                  backgroundColor: theme.Colors.primary,
+                  paddingHorizontal: 6,
+                  paddingVertical: 2,
+                  borderRadius: 10,
+                }}>
+                  <Text style={{ color: '#fff', fontSize: 11 }}>{count}</Text>
+                </View>
+                {count === 0 && (
+                  <TouchableOpacity onPress={() => deleteSousTraitant(st)}>
+                    <Text style={{ color: theme.Colors.danger, fontSize: 14 }}>🗑️</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })}
+        </View>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <TextInput
+            value={newST}
+            onChangeText={setNewST}
+            placeholder="Nouveau sous-traitant"
+            style={{
+              flex: 1,
+              backgroundColor: theme.Colors.surfaceMuted,
+              padding: 12,
+              borderRadius: 8,
+              color: theme.Colors.text,
+            }}
+            placeholderTextColor={theme.Colors.textMuted}
+          />
+          <TouchableOpacity
+            onPress={addSousTraitant}
+            style={{
+              backgroundColor: theme.Colors.primary,
+              paddingHorizontal: 16,
+              borderRadius: 8,
+              justifyContent: 'center',
+            }}
+          >
+            <Text style={{ color: '#fff', fontWeight: 'bold' }}>+</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Liste chauffeurs */}
+      <View style={{
+        backgroundColor: theme.Colors.surface,
+        padding: 16,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: theme.Colors.subtleBorder,
+      }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <Text style={{ color: theme.Colors.text, fontWeight: 'bold' }}>
+            🚗 Chauffeurs ({filteredChauffeurs.length})
+          </Text>
+          <TouchableOpacity
+            onPress={() => setShowFilterPicker(true)}
+            style={{
+              backgroundColor: theme.Colors.surfaceMuted,
+              paddingHorizontal: 12,
+              paddingVertical: 6,
+              borderRadius: 20,
+            }}
+          >
+            <Text style={{ color: theme.Colors.text, fontSize: 13 }}>
+              {filterST === 'TOUS' ? 'Tous' : filterST} ▼
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {loading && <ActivityIndicator color={theme.Colors.primary} />}
+
+        {Object.entries(grouped).map(([st, chs]) => (
+          <View key={st} style={{ marginBottom: 16 }}>
+            <Text style={{ color: theme.Colors.primary, fontWeight: 'bold', marginBottom: 8 }}>
+              {st} ({chs.length})
+            </Text>
+            {chs.map(ch => (
+              <View key={ch.name} style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: theme.Colors.surfaceMuted,
+                padding: 12,
+                borderRadius: 8,
+                marginBottom: 6,
+              }}>
+                <Text style={{ flex: 1, color: theme.Colors.text }}>{ch.name}</Text>
+                <TouchableOpacity onPress={() => openEditChauffeur(ch)} style={{ padding: 6 }}>
+                  <Text style={{ fontSize: 16 }}>✏️</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => deleteChauffeur(ch)} style={{ padding: 6 }}>
+                  <Text style={{ fontSize: 16 }}>🗑️</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        ))}
+
+        {filteredChauffeurs.length === 0 && !loading && (
+          <Text style={{ color: theme.Colors.textMuted, textAlign: 'center' }}>
+            Aucun chauffeur
+          </Text>
+        )}
+      </View>
+
+      {/* Modal filtre */}
+      <RNModal visible={showFilterPicker} animationType="fade" transparent>
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 }}
+          onPress={() => setShowFilterPicker(false)}
+        >
+          <View style={{ backgroundColor: theme.Colors.surface, borderRadius: 12, padding: 16, maxHeight: '60%' }}>
+            <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 12 }}>Filtrer par sous-traitant</Text>
+            <ScrollView>
+              <TouchableOpacity
+                onPress={() => { setFilterST('TOUS'); setShowFilterPicker(false); }}
+                style={{
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: filterST === 'TOUS' ? theme.Colors.primary : theme.Colors.surfaceMuted,
+                  marginBottom: 8,
+                }}
+              >
+                <Text style={{ color: filterST === 'TOUS' ? '#fff' : theme.Colors.text }}>Tous</Text>
+              </TouchableOpacity>
+              {sousTraitants.map(st => (
+                <TouchableOpacity
+                  key={st}
+                  onPress={() => { setFilterST(st); setShowFilterPicker(false); }}
+                  style={{
+                    padding: 14,
+                    borderRadius: 8,
+                    backgroundColor: filterST === st ? theme.Colors.primary : theme.Colors.surfaceMuted,
+                    marginBottom: 8,
+                  }}
+                >
+                  <Text style={{ color: filterST === st ? '#fff' : theme.Colors.text }}>{st}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </RNModal>
+
+      {/* Modal ST picker pour ajout */}
+      <RNModal visible={showSTPickerAdd} animationType="fade" transparent>
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 }}
+          onPress={() => setShowSTPickerAdd(false)}
+        >
+          <View style={{ backgroundColor: theme.Colors.surface, borderRadius: 12, padding: 16, maxHeight: '60%' }}>
+            <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 12 }}>Sous-traitant</Text>
+            <ScrollView>
+              {sousTraitants.map(st => (
+                <TouchableOpacity
+                  key={st}
+                  onPress={() => { setNewChauffeurST(st); setShowSTPickerAdd(false); }}
+                  style={{
+                    padding: 14,
+                    borderRadius: 8,
+                    backgroundColor: newChauffeurST === st ? theme.Colors.primary : theme.Colors.surfaceMuted,
+                    marginBottom: 8,
+                  }}
+                >
+                  <Text style={{ color: newChauffeurST === st ? '#fff' : theme.Colors.text }}>{st}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </RNModal>
+
+      {/* Modal édition chauffeur */}
+      <RNModal visible={showEditModal} animationType="slide" transparent>
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          padding: 20,
+        }}>
+          <View style={{
+            backgroundColor: theme.Colors.surface,
+            borderRadius: 16,
+            padding: 20,
+          }}>
+            <Text style={{ color: theme.Colors.text, fontSize: 18, fontWeight: 'bold', marginBottom: 16 }}>
+              ✏️ Modifier {editingChauffeur?.name}
+            </Text>
+
+            <Text style={{ color: theme.Colors.textMuted, marginBottom: 4 }}>Sous-traitant</Text>
+            <TouchableOpacity
+              onPress={() => setShowSTPickerEdit(true)}
+              style={{
+                backgroundColor: theme.Colors.surfaceMuted,
+                padding: 12,
+                borderRadius: 8,
+                marginBottom: 16,
+              }}
+            >
+              <Text style={{ color: theme.Colors.text }}>{editST}</Text>
+            </TouchableOpacity>
+
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              <TouchableOpacity
+                onPress={() => setShowEditModal(false)}
+                style={{
+                  flex: 1,
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: theme.Colors.surfaceMuted,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: theme.Colors.text }}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={saveEditChauffeur}
+                style={{
+                  flex: 1,
+                  padding: 14,
+                  borderRadius: 8,
+                  backgroundColor: theme.Colors.success,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: 'bold' }}>Enregistrer</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </RNModal>
+
+      {/* Modal ST picker pour édition */}
+      <RNModal visible={showSTPickerEdit} animationType="fade" transparent>
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 }}
+          onPress={() => setShowSTPickerEdit(false)}
+        >
+          <View style={{ backgroundColor: theme.Colors.surface, borderRadius: 12, padding: 16, maxHeight: '60%' }}>
+            <Text style={{ color: theme.Colors.text, fontWeight: 'bold', marginBottom: 12 }}>Sous-traitant</Text>
+            <ScrollView>
+              {sousTraitants.map(st => (
+                <TouchableOpacity
+                  key={st}
+                  onPress={() => { setEditST(st); setShowSTPickerEdit(false); }}
+                  style={{
+                    padding: 14,
+                    borderRadius: 8,
+                    backgroundColor: editST === st ? theme.Colors.primary : theme.Colors.surfaceMuted,
+                    marginBottom: 8,
+                  }}
+                >
+                  <Text style={{ color: editST === st ? '#fff' : theme.Colors.text }}>{st}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </RNModal>
+
+      {/* Bouton retour */}
+      <TouchableOpacity
+        onPress={onBack}
+        style={{
+          backgroundColor: theme.Colors.muted,
+          padding: 14,
+          borderRadius: 10,
+          alignItems: 'center',
+          marginTop: 16,
+        }}
+      >
+        <Text style={{ color: '#fff', fontWeight: 'bold' }}>← Retour</Text>
+      </TouchableOpacity>
+    </ScrollView>
+  );
+}
 
 // ===============
 // PROFILE SCREEN - Gestion du profil utilisateur

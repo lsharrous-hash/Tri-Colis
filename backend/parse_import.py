@@ -366,7 +366,14 @@ def extract_chauffeur_from_filename(filename):
     if not filename:
         return "Inconnu"
     
+    # Décoder les caractères URL encodés (%20 -> espace, etc.)
+    from urllib.parse import unquote
+    filename = unquote(filename)
+    
     name = os.path.splitext(filename)[0]
+    
+    # Enlever les espaces en trop
+    name = ' '.join(name.split())
     
     # Enlever les suffixes Windows de téléchargement: (1), (2), etc.
     name = re.sub(r'\s*\(\d+\)$', '', name)

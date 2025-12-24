@@ -10,7 +10,7 @@ const bcrypt = require("bcryptjs");
 const XLSX = require("xlsx");
 const crypto = require('crypto');
 
-// Import des routes unifiées
+// Import des routes d'import unifié
 const importRoutes = require('./routes_import');
 
 const app = express();
@@ -592,18 +592,6 @@ let CHAUFFEURS_MAPPING = { chauffeurs: [], sousTraitants: [] };
 // Charger les données au démarrage
 loadDataFromFile();
 
-// Initialiser les routes d'import unifié avec les données globales
-importRoutes.initializeData(
-    COLIS, 
-    TOURS, 
-    () => NEXT_COLIS_ID,
-    (val) => { NEXT_COLIS_ID = val; },
-    () => NEXT_TOUR_ID,
-    (val) => { NEXT_TOUR_ID = val; },
-    saveDataToFile
-);
-app.use('/api', importRoutes);
-
 let USERS = [];
 let SESSIONS = {};
 
@@ -1053,7 +1041,7 @@ function generateToken(user) {
     role: user.role,
     sousTraitantName: user.sousTraitantName || null,
     createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // Expire dans 24h
+    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // Expire dans 7 jours
   };
   
   saveSessionsToFile();
@@ -1106,10 +1094,25 @@ function requireAdmin(req, res, next) {
 // Initialisation
 // ==============================
 loadUsersFromFile();
-// loadDataFromFile(); // SUPPRIMÉ - déjà appelé plus haut avant initializeData (ligne 593)
+// NOTE: loadDataFromFile() déjà appelé ligne 590 - NE PAS RAPPELER ICI!
 loadSessionsFromFile();
 loadChauffeursFromFile(); // Mapping chauffeur → sous-traitant
 loadTrackingPatterns(); // Patterns de tracking (préfixes Gofo/Cainiao)
+
+// Initialiser les routes d'import unifié avec les données globales
+importRoutes.initializeData(
+    COLIS,
+    TOURS,
+    () => NEXT_COLIS_ID,
+    (val) => { NEXT_COLIS_ID = val; },
+    () => NEXT_TOUR_ID,
+    (val) => { NEXT_TOUR_ID = val; },
+    saveDataToFile,
+    USERS
+);
+
+// Monter les routes d'import unifié
+app.use('/api', importRoutes);
 
 // ==============================
 // Synchronisation automatique des sous-traitants
@@ -1842,16 +1845,46 @@ app.post(
         });
       }
 
-      // Séparer les colis par type de tracking (Gofo vs Cainiao)
-      // Les PDF Spoke peuvent contenir un mix des deux types
-      const allColisGofo = allColis.filter(c => c.trackingNumber && c.trackingNumber.startsWith('GFFR'));
-      const allColisCainiao = allColis.filter(c => c.trackingNumber && (c.trackingNumber.startsWith('DOFR') || c.trackingNumber.startsWith('CNFR')));
+      // Vérifier si les trackings correspondent bien à Cainiao (pas à Gofo)
+      const typeMismatchPDF = [];
+      for (const tracking of trackingsListPDF.slice(0, 30)) {
+        const detected = detectTrackingType(tracking);
+        if (detected.type !== 'unknown' && detected.type !== 'caniao') {
+          typeMismatchPDF.push({
+            tracking,
+            detectedType: detected.type,
+            prefix: detected.prefix
+          });
+        }
+      }
       
-      log('INFO', 'Séparation des colis par type', { 
-        totalColis: allColis.length,
-        gofoCount: allColisGofo.length, 
-        caniaoCount: allColisCainiao.length 
-      });
+      // Si plus de 3 trackings sont d'un autre type, bloquer l'import
+      if (typeMismatchPDF.length >= 3) {
+        const detectedType = typeMismatchPDF[0].detectedType;
+        const mismatchCount = typeMismatchPDF.length;
+        
+        // Vérifier si l'utilisateur a forcé l'import (header spécial)
+        const forceImport = req.headers['x-force-import'] === 'true';
+        
+        if (!forceImport) {
+          fs.unlinkSync(uploaded.path);
+          return res.status(400).json({
+            error: "TYPE_MISMATCH",
+            message: `Ces colis semblent être de type ${detectedType.toUpperCase()} et non Cainiao`,
+            detectedType: detectedType,
+            expectedType: 'caniao',
+            mismatchCount: mismatchCount,
+            examples: typeMismatchPDF.slice(0, 5).map(m => m.tracking.substring(0, 20)),
+            totalColis: allColis.length
+          });
+        }
+        
+        log('WARN', 'Import Cainiao PDF forcé malgré type mismatch', { 
+          mismatchCount, 
+          detectedType,
+          examples: typeMismatchPDF.slice(0, 3) 
+        });
+      }
 
       // Extraire les plages de chauffeurs depuis les numéros d'ordre
       // Les colis sont déjà parsés avec orderNumber, on doit détecter les plages
@@ -2016,62 +2049,73 @@ app.post(
       }
 
       // Créer une tournée pour chaque plage (tous les chauffeurs sont connus)
-      // NOUVEAU: Séparer Gofo et Cainiao dans des tournées distinctes
       const createdTours = [];
 
-      // Fonction helper pour créer une tournée d'un type donné
-      const createTourForType = (chauffeur, sousTraitantName, colisList, isGofo, debut, fin) => {
-        if (colisList.length === 0) return null;
+      for (const plage of plages) {
+        const { chauffeur, debut, fin } = plage;
+        const sousTraitantName = chauffeursSousTraitants[chauffeur] || null;
+        
+        // Filtrer les colis de cette plage par numéro d'ordre
+        const colisDePlage = allColis.filter(c => {
+          const order = c.orderNumber;
+          return order >= debut && order <= fin;
+        });
+        
+        if (colisDePlage.length === 0) {
+          log('WARN', 'Aucun colis pour plage', { chauffeur, debut, fin });
+          continue;
+        }
 
-        // Filtrer les doublons
-        const { uniqueColis, duplicates, duplicatesInFile } = filterDuplicateTrackings(colisList, tourDate);
+        // Filtrer les doublons pour cette plage
+        const { uniqueColis, duplicates, duplicatesInFile } = filterDuplicateTrackings(colisDePlage, tourDate);
         
         if (uniqueColis.length === 0) {
-          log('WARN', `Tous les colis ${isGofo ? 'Gofo' : 'Cainiao'} sont des doublons pour plage`, { 
+          log('WARN', 'Tous les colis sont des doublons pour plage', { 
             chauffeur, debut, fin, 
             duplicatesCount: duplicates.length 
           });
-          return null;
+          continue;
         }
 
         // Trier par numéro d'ordre
         uniqueColis.sort((a, b) => a.orderNumber - b.orderNumber);
 
-        // *** ANTI-DOUBLON : Supprimer l'ancienne tournée si elle existe pour ce chauffeur + date + type ***
+        // *** ANTI-DOUBLON : Supprimer l'ancienne tournée Cainiao si elle existe pour ce chauffeur + date ***
         const existingTourIndex = TOURS.findIndex(t => 
           t.chauffeurName?.toLowerCase() === chauffeur.toLowerCase() && 
           t.date === tourDate && 
-          (isGofo ? t.isGofo === true : t.isCaniao === true)
+          t.isCaniao === true
         );
         
         if (existingTourIndex >= 0) {
           const oldTour = TOURS[existingTourIndex];
-          log('INFO', `Tournée ${isGofo ? 'Gofo' : 'Cainiao'} existante trouvée - remplacement`, { 
+          log('INFO', 'Tournée Cainiao existante trouvée - remplacement', { 
             oldTourId: oldTour.id, 
             chauffeur, 
             date: tourDate,
             oldST: oldTour.sousTraitantName,
             newST: sousTraitantName
           });
+          // Supprimer les colis de l'ancienne tournée (même chauffeur + même date)
           COLIS = COLIS.filter(c => c.tourId !== oldTour.id);
+          // Supprimer l'ancienne tournée
           TOURS.splice(existingTourIndex, 1);
         }
 
-        // Créer la tournée avec le bon type
+        // Créer la tournée avec le sous-traitant associé
         const tourId = NEXT_TOUR_ID++;
         const newTour = {
           id: tourId,
           chauffeurName: chauffeur,
-          sousTraitantName: sousTraitantName,
+          sousTraitantName: sousTraitantName,  // Maintenant on assigne le sous-traitant !
           date: tourDate,
-          isGofo: isGofo,
-          isCaniao: !isGofo,
+          isCaniao: true,
           colisCount: uniqueColis.length,
           createdAt: new Date().toISOString()
         };
         TOURS.push(newTour);
 
-        // Créer les colis
+        // Créer les colis avec le sous-traitant
         const createdColis = [];
         for (const colisData of uniqueColis) {
           const colisId = NEXT_COLIS_ID++;
@@ -2080,7 +2124,7 @@ app.post(
             tourId: tourId,
             date: tourDate,
             chauffeurName: chauffeur,
-            sousTraitantName: sousTraitantName,
+            sousTraitantName: sousTraitantName,  // Sous-traitant assigné !
             orderNumber: colisData.orderNumber,
             trackingNumber: colisData.trackingNumber,
             address: colisData.address || "",
@@ -2095,63 +2139,23 @@ app.post(
         }
 
         const duplicatesTotal = duplicates.length + duplicatesInFile.length;
-        
-        // Créer le backup admin
+        createdTours.push({
+          tour: newTour,
+          colisCount: createdColis.length,
+          plage: `${debut}-${fin}`,
+          duplicatesIgnored: duplicatesTotal
+        });
+
+        // Créer le backup admin (le Cainiao PDF est toujours importé par l'admin)
         createAdminTourBackup(newTour, createdColis, 'ADMIN');
 
-        log('INFO', `Tournée ${isGofo ? 'GOFO' : 'CANIAO'} créée`, { 
+        log('INFO', 'Tournée CANIAO créée', { 
           chauffeur, 
           tourId, 
           colisCount: createdColis.length,
           duplicatesIgnored: duplicatesTotal,
           plage: `${debut}-${fin}`
         });
-
-        return {
-          tour: newTour,
-          colisCount: createdColis.length,
-          plage: `${debut}-${fin}`,
-          duplicatesIgnored: duplicatesTotal,
-          type: isGofo ? 'gofo' : 'caniao'
-        };
-      };
-
-      for (const plage of plages) {
-        const { chauffeur, debut, fin } = plage;
-        const sousTraitantName = chauffeursSousTraitants[chauffeur] || null;
-        
-        // Filtrer les colis de cette plage par numéro d'ordre
-        const colisDePlage = allColis.filter(c => {
-          const order = parseInt(c.orderNumber, 10);
-          return order >= debut && order <= fin;
-        });
-        
-        if (colisDePlage.length === 0) {
-          log('WARN', 'Aucun colis pour plage', { chauffeur, debut, fin });
-          continue;
-        }
-
-        // Séparer les colis par type de tracking
-        const colisGofo = colisDePlage.filter(c => c.trackingNumber && c.trackingNumber.startsWith('GFFR'));
-        const colisCainiao = colisDePlage.filter(c => c.trackingNumber && (c.trackingNumber.startsWith('DOFR') || c.trackingNumber.startsWith('CNFR')));
-        
-        log('INFO', 'Séparation colis par type pour plage', { 
-          chauffeur, 
-          gofoCount: colisGofo.length, 
-          caniaoCount: colisCainiao.length 
-        });
-
-        // Créer une tournée Gofo si il y a des colis GFFR
-        if (colisGofo.length > 0) {
-          const gofoResult = createTourForType(chauffeur, sousTraitantName, colisGofo, true, debut, fin);
-          if (gofoResult) createdTours.push(gofoResult);
-        }
-
-        // Créer une tournée Cainiao si il y a des colis DOFR/CNFR
-        if (colisCainiao.length > 0) {
-          const caniaoResult = createTourForType(chauffeur, sousTraitantName, colisCainiao, false, debut, fin);
-          if (caniaoResult) createdTours.push(caniaoResult);
-        }
       }
 
       // Sauvegarder
@@ -2160,25 +2164,13 @@ app.post(
       // Supprimer le fichier uploadé
       fs.unlinkSync(uploaded.path);
 
-      // Calculer les stats par type
-      const gofoTours = createdTours.filter(t => t.type === 'gofo');
-      const caniaoTours = createdTours.filter(t => t.type === 'caniao');
+      // Calculer le total de doublons ignorés
       const totalDuplicatesIgnored = createdTours.reduce((sum, t) => sum + (t.duplicatesIgnored || 0), 0);
       const totalColisImported = createdTours.reduce((sum, t) => sum + t.colisCount, 0);
-      const gofoColisCount = gofoTours.reduce((sum, t) => sum + t.colisCount, 0);
-      const caniaoColisCount = caniaoTours.reduce((sum, t) => sum + t.colisCount, 0);
       
-      let message = `Import réussi: `;
-      const parts = [];
-      if (gofoTours.length > 0) {
-        parts.push(`${gofoTours.length} tournée(s) Gofo (${gofoColisCount} colis)`);
-      }
-      if (caniaoTours.length > 0) {
-        parts.push(`${caniaoTours.length} tournée(s) Cainiao (${caniaoColisCount} colis)`);
-      }
-      message += parts.join(' + ');
+      let message = `${createdTours.length} tournées CANIAO créées: ${totalColisImported} colis`;
       if (totalDuplicatesIgnored > 0) {
-        message += ` | ${totalDuplicatesIgnored} doublons ignorés`;
+        message += ` (${totalDuplicatesIgnored} doublons ignorés)`;
       }
 
       res.json({
@@ -2186,10 +2178,6 @@ app.post(
         message: message,
         tours: createdTours,
         totalColisImported: totalColisImported,
-        gofoColisCount: gofoColisCount,
-        caniaoColisCount: caniaoColisCount,
-        gofoToursCount: gofoTours.length,
-        caniaoToursCount: caniaoTours.length,
         totalDuplicatesIgnored: totalDuplicatesIgnored
       });
 
@@ -5885,6 +5873,180 @@ app.post("/api/dispatcher/tour/add", authMiddleware(["ADMIN", "DISPATCHER"]), up
 });
 
 // ==============================
+// API - Résumé des chauffeurs par date (pour mobile)
+// ==============================
+app.get("/api/chauffeurs/summary/:date", authMiddleware(["ADMIN", "DISPATCHER"]), (req, res) => {
+  try {
+    const { date } = req.params;
+    const user = req.user;
+    
+    // IMPORTANT: Pour DISPATCHER, récupérer le sousTraitantName depuis la base (au cas où le token est ancien)
+    let sousTraitantFilter = null;
+    if (user.role === "DISPATCHER") {
+      const dbUser = USERS.find(u => u.id === user.userId);
+      sousTraitantFilter = dbUser?.sousTraitantName || user.sousTraitantName;
+      console.log(`[SUMMARY] DISPATCHER ${user.login} - sousTraitantName from token: ${user.sousTraitantName}, from DB: ${dbUser?.sousTraitantName}, using: ${sousTraitantFilter}`);
+    }
+    
+    console.log(`[SUMMARY] Date: ${date}, User: ${user.login}, Role: ${user.role}, Filter ST: ${sousTraitantFilter}`);
+    
+    // Filtrer les colis par date
+    let colisForDate = COLIS.filter(c => c.date === date);
+    
+    // Si dispatcher, filtrer par sous-traitant
+    if (user.role === "DISPATCHER" && sousTraitantFilter) {
+      colisForDate = colisForDate.filter(c => c.sousTraitantName === sousTraitantFilter);
+    }
+    
+    // Grouper par chauffeur
+    const chauffeurMap = new Map();
+    
+    for (const colis of colisForDate) {
+      const chauffeurName = colis.chauffeurName || "Inconnu";
+      
+      if (!chauffeurMap.has(chauffeurName)) {
+        chauffeurMap.set(chauffeurName, {
+          chauffeur: chauffeurName,
+          sousTraitant: colis.sousTraitantName || "Inconnu",
+          gofo: { count: 0 },
+          cainiao: { count: 0 },
+          total: 0
+        });
+      }
+      
+      const entry = chauffeurMap.get(chauffeurName);
+      entry.total++;
+      
+      // Déterminer le type par préfixe du tracking
+      const tracking = colis.trackingNumber || "";
+      if (tracking.startsWith("GFFR")) {
+        entry.gofo.count++;
+      } else if (tracking.startsWith("DOFR") || tracking.startsWith("CNFR")) {
+        entry.cainiao.count++;
+      } else if (colis.isCaniao || colis.type === "cainiao") {
+        entry.cainiao.count++;
+      } else {
+        entry.gofo.count++; // Par défaut
+      }
+    }
+    
+    // Convertir en tableau et trier
+    const chauffeurs = Array.from(chauffeurMap.values())
+      .sort((a, b) => a.chauffeur.localeCompare(b.chauffeur));
+    
+    // Calculer les totaux
+    const totals = {
+      gofo: chauffeurs.reduce((sum, ch) => sum + ch.gofo.count, 0),
+      cainiao: chauffeurs.reduce((sum, ch) => sum + ch.cainiao.count, 0),
+      total: colisForDate.length
+    };
+    
+    console.log(`[SUMMARY] ${chauffeurs.length} chauffeurs, ${totals.total} colis (${totals.gofo} Gofo, ${totals.cainiao} Cainiao)`);
+    
+    res.json({
+      date,
+      chauffeurs,
+      totals
+    });
+    
+  } catch (err) {
+    console.error("Erreur summary:", err);
+    res.status(500).json({ error: "INTERNAL_ERROR", message: err.message });
+  }
+});
+
+// ==============================
+// API ADMIN - Supprimer TOUTES les tournées d'une date
+// ==============================
+app.delete("/api/admin/tours/all", authMiddleware(["ADMIN"]), (req, res) => {
+  try {
+    const { date } = req.query;
+    
+    if (!date) {
+      return res.status(400).json({ error: "MISSING_DATE", message: "Date requise" });
+    }
+    
+    console.log('=== DELETE ALL TOURS (ADMIN) ===');
+    console.log('Date demandée:', date, 'User:', req.user.login);
+    
+    // Compter les colis et tours pour cette date
+    const colisForDate = COLIS.filter(c => c.date === date);
+    const toursForDate = TOURS.filter(t => t.date === date);
+    console.log(`Colis trouvés: ${colisForDate.length}, Tours trouvés: ${toursForDate.length}`);
+    
+    if (colisForDate.length === 0 && toursForDate.length === 0) {
+      console.log('RIEN À SUPPRIMER pour cette date');
+      return res.json({ 
+        success: true, 
+        message: "Aucune donnée à supprimer pour cette date",
+        deletedTours: 0,
+        deletedColis: 0
+      });
+    }
+    
+    // Mémoriser l'association colis → chauffeur avant suppression
+    let memorizedCount = 0;
+    for (const colis of colisForDate) {
+      if (colis.trackingNumber) {
+        ORIGINAL_COLIS_MAPPING[colis.trackingNumber.toUpperCase()] = {
+          chauffeur: colis.chauffeurName,
+          sousTraitant: colis.sousTraitantName,
+          address: colis.address,
+          tourType: colis.type || 'unknown',
+          memorizedAt: new Date().toISOString()
+        };
+        memorizedCount++;
+      }
+    }
+    
+    // 1. Supprimer TOUS les colis de cette date
+    let deletedColis = 0;
+    for (let i = COLIS.length - 1; i >= 0; i--) {
+      if (COLIS[i].date === date) {
+        COLIS.splice(i, 1);
+        deletedColis++;
+      }
+    }
+    
+    // 2. Supprimer TOUTES les tournées de cette date
+    let deletedTours = 0;
+    for (let i = TOURS.length - 1; i >= 0; i--) {
+      if (TOURS[i].date === date) {
+        TOURS.splice(i, 1);
+        deletedTours++;
+      }
+    }
+    
+    console.log(`SUPPRIMÉ: ${deletedColis} colis, ${deletedTours} tournées`);
+    
+    log('INFO', 'Suppression toutes tournées (admin)', { 
+      date, 
+      deletedTours, 
+      deletedColis,
+      memorizedColis: memorizedCount,
+      user: req.user.login
+    });
+    
+    // Sauvegarder les données
+    saveDataToFile();
+    console.log(`✅ Données sauvegardées: ${COLIS.length} colis, ${TOURS.length} tours`);
+    
+    res.json({
+      success: true,
+      message: `${deletedTours} tournée(s) et ${deletedColis} colis supprimés pour le ${date}`,
+      deletedTours,
+      deletedColis,
+      memorizedColis: memorizedCount
+    });
+    
+  } catch (err) {
+    console.error('Erreur suppression toutes tournées:', err);
+    log('ERROR', 'Erreur suppression toutes tournées', { error: err.message });
+    res.status(500).json({ error: "INTERNAL_ERROR", message: "Erreur serveur" });
+  }
+});
+
+// ==============================
 // API DISPATCHER - Supprimer tournées d'un chauffeur (avec mémorisation)
 // ==============================
 app.delete("/api/dispatcher/tour/:driverName", authMiddleware(["ADMIN", "DISPATCHER"]), (req, res) => {
@@ -5987,96 +6149,6 @@ app.delete("/api/dispatcher/tour/:driverName", authMiddleware(["ADMIN", "DISPATC
   } catch (err) {
     console.error('Erreur suppression tournée dispatcher:', err);
     log('ERROR', 'Erreur suppression tournée dispatcher', { error: err.message });
-    res.status(500).json({ error: "INTERNAL_ERROR", message: "Erreur serveur" });
-  }
-});
-
-// ==============================
-// API ADMIN - Supprimer TOUTES les tournées d'une date
-// ==============================
-app.delete("/api/admin/tours/all", authMiddleware(["ADMIN"]), (req, res) => {
-  try {
-    const { date } = req.query;
-    
-    if (!date) {
-      return res.status(400).json({ error: "MISSING_DATE", message: "Date requise" });
-    }
-    
-    console.log('=== DELETE ALL TOURS (ADMIN) ===');
-    console.log('Date demandée:', date, 'User:', req.user.login);
-    
-    // DEBUG: Compter les colis et tours pour cette date
-    const colisForDate = COLIS.filter(c => c.date === date);
-    const toursForDate = TOURS.filter(t => t.date === date);
-    console.log(`Colis trouvés: ${colisForDate.length}, Tours trouvés: ${toursForDate.length}`);
-    
-    if (colisForDate.length === 0 && toursForDate.length === 0) {
-      console.log('RIEN À SUPPRIMER pour cette date');
-      return res.json({ 
-        success: true, 
-        message: "Aucune donnée à supprimer pour cette date",
-        deletedTours: 0,
-        deletedColis: 0
-      });
-    }
-    
-    // Mémoriser l'association colis → chauffeur avant suppression
-    let memorizedCount = 0;
-    for (const colis of colisForDate) {
-      if (colis.trackingNumber) {
-        ORIGINAL_COLIS_MAPPING[colis.trackingNumber.toUpperCase()] = {
-          chauffeur: colis.chauffeurName,
-          sousTraitant: colis.sousTraitantName,
-          address: colis.address,
-          tourType: colis.type || 'unknown',
-          memorizedAt: new Date().toISOString()
-        };
-        memorizedCount++;
-      }
-    }
-    
-    // 1. Supprimer TOUS les colis de cette date (directement, sans passer par les tours)
-    let deletedColis = 0;
-    for (let i = COLIS.length - 1; i >= 0; i--) {
-      if (COLIS[i].date === date) {
-        COLIS.splice(i, 1);
-        deletedColis++;
-      }
-    }
-    
-    // 2. Supprimer TOUTES les tournées de cette date
-    let deletedTours = 0;
-    for (let i = TOURS.length - 1; i >= 0; i--) {
-      if (TOURS[i].date === date) {
-        TOURS.splice(i, 1);
-        deletedTours++;
-      }
-    }
-    
-    console.log(`SUPPRIMÉ: ${deletedColis} colis, ${deletedTours} tournées`);
-    
-    log('INFO', 'Suppression toutes tournées (admin)', { 
-      date, 
-      deletedTours, 
-      deletedColis,
-      memorizedColis: memorizedCount,
-      user: req.user.login
-    });
-    
-    // IMPORTANT: Sauvegarder les données après suppression
-    saveDataToFile();
-    
-    res.json({
-      success: true,
-      message: `${deletedTours} tournée(s) et ${deletedColis} colis supprimés pour le ${date}`,
-      deletedTours,
-      deletedColis,
-      memorizedColis: memorizedCount
-    });
-    
-  } catch (err) {
-    console.error('Erreur suppression toutes tournées:', err);
-    log('ERROR', 'Erreur suppression toutes tournées', { error: err.message });
     res.status(500).json({ error: "INTERNAL_ERROR", message: "Erreur serveur" });
   }
 });

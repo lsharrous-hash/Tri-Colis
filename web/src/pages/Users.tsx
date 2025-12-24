@@ -632,14 +632,11 @@ function UsersTab() {
     queryKey: ['sous-traitants'],
     queryFn: async () => {
       const res = await import('../lib/api').then(m => m.getSousTraitants())
-      // Gérer les différents formats de retour possibles
-      if (Array.isArray(res)) return res
-      if (res?.sousTraitants && Array.isArray(res.sousTraitants)) return res.sousTraitants
-      return []
+      return res.sousTraitants
     },
     enabled: !!token,
   })
-  const sousTraitants = Array.isArray(sousTraitantsData) ? sousTraitantsData : []
+  const sousTraitants = sousTraitantsData || []
 
   const [login, setLogin] = useState('')
   const [password, setPassword] = useState('')
