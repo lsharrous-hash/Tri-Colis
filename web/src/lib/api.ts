@@ -97,18 +97,6 @@ export async function getSousTraitants() {
   return data
 }
 
-// Chauffeurs existants
-export interface ExistingChauffeur {
-  name: string
-  sousTraitant: string
-  source: 'users' | 'mapping'
-}
-
-export async function getExistingChauffeurs() {
-  const { data } = await api.get<{ chauffeurs: ExistingChauffeur[]; sousTraitants: string[] }>('/api/chauffeurs/list')
-  return data
-}
-
 // Tours
 export interface Tour {
   id: number
@@ -177,62 +165,13 @@ export function downloadTour(tourId: number) {
 }
 
 // =====================
-// Import Unifié API
+// Import Unifié - Types et fonctions
 // =====================
 
 export interface UnknownChauffeur {
   name: string
   colisCount: number
-  stats: { gofo: number; cainiao: number }
-}
-
-export interface ImportUnifiedResponse {
-  success?: boolean
-  message?: string
-  format?: string
-  tours?: Array<{
-    tourId: number
-    chauffeur: string
-    sousTraitant: string
-    type: 'gofo' | 'cainiao'
-    colisCount: number
-    plage?: string | null
-  }>
-  totalImported?: number
-  totalDuplicates?: number
-  gofoCount?: number
-  caniaoCount?: number
-  elapsed?: number
-  // En cas de chauffeurs inconnus
-  error?: string
-  unknownChauffeurs?: UnknownChauffeur[]
-  sousTraitants?: string[]
-  existingChauffeurs?: Array<{ name: string; sousTraitant: string }>
-  parseResult?: {
-    format: string
-    totalColis: number
-    stats: { gofo: number; cainiao: number }
-    chauffeurs: Array<{ name: string; colisCount: number; stats: { gofo: number; cainiao: number } }>
-  }
-  filename?: string
-  tourDate?: string
-}
-
-export async function importUnified(
-  file: File, 
-  date: string, 
-  chauffeurAssignments?: Record<string, string>
-): Promise<ImportUnifiedResponse> {
-  const formData = new FormData()
-  formData.append('file', file)
-  formData.append('date', date)
-  if (chauffeurAssignments) {
-    formData.append('chauffeurAssignments', JSON.stringify(chauffeurAssignments))
-  }
-  const { data } = await api.post<ImportUnifiedResponse>('/api/import/unified', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
-  return data
+  source: string
 }
 
 export interface ChauffeurSummary {
@@ -243,55 +182,92 @@ export interface ChauffeurSummary {
   total: number
 }
 
-export interface ChauffeursDateSummary {
-  date: string
-  chauffeurs: ChauffeurSummary[]
-  totals: { gofo: number; cainiao: number; total: number }
+export interface ExistingChauffeur {
+  name: string
+  sousTraitant: string
 }
 
-export async function getChauffeursSummary(date: string): Promise<ChauffeursDateSummary> {
-  // Ajouter un timestamp pour éviter le cache du navigateur
-  const { data } = await api.get<ChauffeursDateSummary>(`/api/chauffeurs/summary/${date}`, {
-    params: { _t: Date.now() }
+export interface ImportUnifiedResponse {
+  message: string
+  totalColis: number
+  gofoCount: number
+  caniaoCount: number
+  duplicates: number
+  unknownChauffeurs?: UnknownChauffeur[]
+}
+
+// Récupérer le résumé des chauffeurs par date
+export async function getChauffeursSummary(date: string) {
+  const { data } = await api.get<{
+    date: string
+    chauffeurs: ChauffeurSummary[]
+    totals: { gofo: number; cainiao: number; total: number }
+  }>(`/api/chauffeurs/summary/${date}`)
+  return data
+}
+
+// Import unifié
+export async function importUnified(
+  files: File[],
+  date: string,
+  chauffeursSousTraitants?: Record<string, string>
+) {
+  const formData = new FormData()
+  formData.append('date', date)
+  
+  files.forEach((file) => {
+    formData.append('files', file)
+  })
+  
+  if (chauffeursSousTraitants) {
+    formData.append('chauffeursSousTraitants', JSON.stringify(chauffeursSousTraitants))
+  }
+  
+  const { data } = await api.post<ImportUnifiedResponse>('/api/import/unified', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
   })
   return data
 }
 
-export function downloadExport(chauffeur: string, date: string, type: 'gofo' | 'cainiao' | 'mutualise') {
+// Export Excel pour un chauffeur
+export function downloadExport(chauffeur: string, date: string, source?: 'gofo' | 'cainiao' | 'all') {
   try {
     const authData = localStorage.getItem('tricoli.auth')
     if (!authData) {
-      alert('Vous devez être connecté pour télécharger')
+      alert('Vous devez être connecté')
       return
     }
     const { token } = JSON.parse(authData)
     if (!token) {
-      alert('Token manquant, veuillez vous reconnecter')
+      alert('Token manquant')
       return
     }
-    // Utiliser la route existante /api/mutualized/driver/:name/export
-    // type 'mutualise' = pas de filtre source, 'gofo'/'cainiao' = filtre
+    
     let url = `${api.defaults.baseURL}/api/mutualized/driver/${encodeURIComponent(chauffeur)}/export?date=${date}&token=${encodeURIComponent(token)}`
-    if (type !== 'mutualise') {
-      url += `&source=${type}`
+    if (source && source !== 'all') {
+      url += `&source=${source}`
     }
     window.open(url, '_blank')
   } catch (e) {
-    alert('Erreur lors du téléchargement')
+    alert('Erreur export')
   }
 }
 
-export async function addChauffeur(name: string, sousTraitant: string) {
-  const { data } = await api.post('/api/chauffeurs', { name, sousTraitant })
-  return data
-}
-
+// Ajouter un sous-traitant
 export async function addSousTraitant(name: string) {
-  const { data } = await api.post('/api/sous-traitants', { name })
+  const { data } = await api.post<{ sousTraitants: string[] }>('/api/sous-traitants', { name })
   return data
 }
 
-export async function deleteAllTours(date: string) {
-  const { data } = await api.delete('/api/admin/tours/all', { params: { date } })
+// Récupérer les chauffeurs existants
+export async function getExistingChauffeurs() {
+  const { data } = await api.get<{ chauffeurs: ExistingChauffeur[] }>('/api/chauffeurs')
   return data
 }
+
+// Supprimer toutes les tournées d'une date
+export async function deleteAllTours(date: string) {
+  const { data } = await api.delete('/api/tours/all', { params: { date } })
+  return data
+}
+
